@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check clang-format
+        run: find src tests -name '*.hpp' -o -name '*.cpp' | xargs clang-format --dry-run --Werror
+
+      - name: Install build tools, Vulkan headers/loader, glslang, and lavapipe (software Vulkan)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake ninja-build \
+            libvulkan-dev vulkan-tools \
+            glslang-tools \
+            mesa-vulkan-drivers
+
+      - name: Select lavapipe ICD explicitly
+        run: |
+          ICD=$(find /usr/share/vulkan/icd.d/ -name "lvp_icd*.json" 2>/dev/null | head -1)
+          echo "Using ICD: ${ICD:-NOT FOUND}"
+          echo "VK_ICD_FILENAMES=$ICD" >> "$GITHUB_ENV"
+
+      - name: Show Vulkan device (should be lavapipe/llvmpipe software renderer)
+        run: vulkaninfo --summary || true
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Run tests
+        run: ./build/mkx_tests
