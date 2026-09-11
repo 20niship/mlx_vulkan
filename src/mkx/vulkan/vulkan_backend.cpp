@@ -114,6 +114,11 @@ struct Batch {
   bool open                       = false;
   bool has_prior_dispatch         = false;
   std::vector<VkDescriptorPool> pending_desc_pools;
+  // 容量を使い切るまで使い回すpool(vkCreate/DestroyDescriptorPoolの呼び出し回数を減らす。尽きたら新しいpoolをpending_desc_poolsに追加)。
+  VkDescriptorPool current_pool = VK_NULL_HANDLE;
+  uint32_t current_pool_sets_used = 0;
+  static constexpr uint32_t kPoolSetCapacity = 64;
+  static constexpr uint32_t kPoolBindingCapacity = 4096;
 };
 
 Batch& batch() {
@@ -136,9 +141,11 @@ void flush_batch() {
   vkFreeCommandBuffers(c.device, c.command_pool, 1, &b.cmd);
   for(auto pool : b.pending_desc_pools) vkDestroyDescriptorPool(c.device, pool, nullptr);
   b.pending_desc_pools.clear();
-  b.cmd               = VK_NULL_HANDLE;
-  b.open              = false;
-  b.has_prior_dispatch = false;
+  b.cmd                    = VK_NULL_HANDLE;
+  b.open                   = false;
+  b.has_prior_dispatch     = false;
+  b.current_pool           = VK_NULL_HANDLE;
+  b.current_pool_sets_used = 0;
 }
 
 uint32_t find_memory_type(VkPhysicalDevice phys, uint32_t type_bits, VkMemoryPropertyFlags props) {
@@ -303,21 +310,36 @@ void VulkanBackend::dispatch(Pipeline& pipeline, std::span<Buffer*> buffers, std
     b.has_prior_dispatch = false;
   }
 
-  VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, pipeline.binding_count};
-  VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-  pool_info.maxSets       = 1;
-  pool_info.poolSizeCount = 1;
-  pool_info.pPoolSizes    = &pool_size;
-  VkDescriptorPool desc_pool;
-  vkCreateDescriptorPool(c.device, &pool_info, nullptr, &desc_pool);
-  b.pending_desc_pools.push_back(desc_pool);
+  if(b.current_pool == VK_NULL_HANDLE || b.current_pool_sets_used >= Batch::kPoolSetCapacity) {
+    VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, Batch::kPoolBindingCapacity};
+    VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pool_info.maxSets       = Batch::kPoolSetCapacity;
+    pool_info.poolSizeCount = 1;
+    pool_info.pPoolSizes    = &pool_size;
+    vkCreateDescriptorPool(c.device, &pool_info, nullptr, &b.current_pool);
+    b.pending_desc_pools.push_back(b.current_pool);
+    b.current_pool_sets_used = 0;
+  }
 
   VkDescriptorSetAllocateInfo set_alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-  set_alloc.descriptorPool     = desc_pool;
+  set_alloc.descriptorPool     = b.current_pool;
   set_alloc.descriptorSetCount = 1;
   set_alloc.pSetLayouts        = &pipeline.set_layout;
   VkDescriptorSet desc_set;
-  vkAllocateDescriptorSets(c.device, &set_alloc, &desc_set);
+  if(vkAllocateDescriptorSets(c.device, &set_alloc, &desc_set) != VK_SUCCESS) {
+    // Pool ran out of binding budget before its set-count budget (large pipelines); start a fresh pool.
+    VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, Batch::kPoolBindingCapacity};
+    VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pool_info.maxSets       = Batch::kPoolSetCapacity;
+    pool_info.poolSizeCount = 1;
+    pool_info.pPoolSizes    = &pool_size;
+    vkCreateDescriptorPool(c.device, &pool_info, nullptr, &b.current_pool);
+    b.pending_desc_pools.push_back(b.current_pool);
+    b.current_pool_sets_used = 0;
+    set_alloc.descriptorPool = b.current_pool;
+    vkAllocateDescriptorSets(c.device, &set_alloc, &desc_set);
+  }
+  b.current_pool_sets_used++;
 
   std::vector<VkDescriptorBufferInfo> buffer_infos(buffers.size());
   std::vector<VkWriteDescriptorSet> writes(buffers.size());
