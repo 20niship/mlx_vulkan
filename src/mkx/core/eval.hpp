@@ -79,6 +79,9 @@ template <ComputeBackend Backend> void eval_node(OpNode& node, std::unordered_ma
       bufs.push_back(out);
       node.multi_outputs.push_back(out);
     }
+    node.free_gpu_buffer = [&node]() {
+      for(void* p : node.multi_outputs) Backend::free(static_cast<typename Backend::Buffer*>(p));
+    };
 
     size_t hash = std::hash<std::string>{}(node.custom_source);
     auto it     = cache.find(hash);
@@ -108,8 +111,9 @@ template <ComputeBackend Backend> void eval_node(OpNode& node, std::unordered_ma
 
     auto* out = Backend::alloc(result.size() * sizeof(float));
     Backend::upload(out, result.data(), result.size() * sizeof(float));
-    node.gpu_buffer = out;
-    node.evaluated  = true;
+    node.gpu_buffer      = out;
+    node.free_gpu_buffer = [&node]() { Backend::free(static_cast<typename Backend::Buffer*>(node.gpu_buffer)); };
+    node.evaluated        = true;
     return;
   }
 
@@ -145,8 +149,9 @@ template <ComputeBackend Backend> void eval_node(OpNode& node, std::unordered_ma
 
   Backend::dispatch(it->second, bufs, push_bytes, {groups_x, 1, 1});
 
-  node.gpu_buffer = out;
-  node.evaluated  = true;
+  node.gpu_buffer      = out;
+  node.free_gpu_buffer = [&node]() { Backend::free(static_cast<typename Backend::Buffer*>(node.gpu_buffer)); };
+  node.evaluated        = true;
 }
 
 } // namespace detail

@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <unistd.h>
+#include <unordered_map>
 #include <vector>
 
 namespace mkx {
@@ -245,7 +246,23 @@ VulkanBackend::Pipeline VulkanBackend::compile(std::string_view source, size_t /
   return pipe;
 }
 
+// OpNodeは1ステップごとに新規でalloc/freeされる(gpu_bufferはeval()単位で使い捨て)ため、サイズ別free-listでVkBuffer/VkDeviceMemory実体を使い回しvkAllocateMemory/vkCreateBufferの呼び出し頻度を下げる。1サイズあたりkMaxPooledPerSizeを超える分は素直に破棄する。
+constexpr size_t kMaxPooledPerSize = 64;
+
+std::unordered_map<size_t, std::vector<VulkanBackend::Buffer*>>& free_list() {
+  static std::unordered_map<size_t, std::vector<VulkanBackend::Buffer*>> pool;
+  return pool;
+}
+
 VulkanBackend::Buffer* VulkanBackend::alloc(size_t nbytes) {
+  auto& pool = free_list();
+  auto it    = pool.find(nbytes);
+  if(it != pool.end() && !it->second.empty()) {
+    auto* buf = it->second.back();
+    it->second.pop_back();
+    return buf;
+  }
+
   auto& c   = ctx();
   auto* buf = new Buffer();
   buf->size = nbytes;
@@ -268,6 +285,12 @@ VulkanBackend::Buffer* VulkanBackend::alloc(size_t nbytes) {
 
 void VulkanBackend::free(Buffer* buf) {
   if(!buf) return;
+  auto& pool  = free_list();
+  auto& slot  = pool[buf->size];
+  if(slot.size() < kMaxPooledPerSize) {
+    slot.push_back(buf);
+    return;
+  }
   auto& c = ctx();
   vkDestroyBuffer(c.device, buf->buffer, nullptr);
   vkFreeMemory(c.device, buf->memory, nullptr);
