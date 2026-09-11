@@ -108,6 +108,39 @@ Context& ctx() {
   return context;
 }
 
+// 旧実装はdispatch()ごとにcommand buffer alloc+submit+vkQueueWaitIdleしており、1 evalあたりの実dispatch数に比例したCPU側オーバーヘッドが支配的だった。同一eval()内のdispatchをここに積み、次のwait_idle()で1回のsubmit+waitにまとめる(descriptor poolは実行完了までpendingに保持)。
+struct Batch {
+  VkCommandBuffer cmd             = VK_NULL_HANDLE;
+  bool open                       = false;
+  bool has_prior_dispatch         = false;
+  std::vector<VkDescriptorPool> pending_desc_pools;
+};
+
+Batch& batch() {
+  static Batch b;
+  return b;
+}
+
+void flush_batch() {
+  auto& b = batch();
+  if(!b.open) return;
+  auto& c = ctx();
+  vkEndCommandBuffer(b.cmd);
+
+  VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+  submit.commandBufferCount = 1;
+  submit.pCommandBuffers    = &b.cmd;
+  vkQueueSubmit(c.queue, 1, &submit, VK_NULL_HANDLE);
+  vkQueueWaitIdle(c.queue);
+
+  vkFreeCommandBuffers(c.device, c.command_pool, 1, &b.cmd);
+  for(auto pool : b.pending_desc_pools) vkDestroyDescriptorPool(c.device, pool, nullptr);
+  b.pending_desc_pools.clear();
+  b.cmd               = VK_NULL_HANDLE;
+  b.open              = false;
+  b.has_prior_dispatch = false;
+}
+
 uint32_t find_memory_type(VkPhysicalDevice phys, uint32_t type_bits, VkMemoryPropertyFlags props) {
   VkPhysicalDeviceMemoryProperties mem_props;
   vkGetPhysicalDeviceMemoryProperties(phys, &mem_props);
@@ -243,6 +276,8 @@ void VulkanBackend::upload(Buffer* buf, const void* data, size_t nbytes) {
 }
 
 void VulkanBackend::download(Buffer* buf, void* data, size_t nbytes) {
+  // A dispatch may still be sitting unsubmitted in the open batch; flush so this read sees its output.
+  flush_batch();
   auto& c      = ctx();
   void* mapped = nullptr;
   vkMapMemory(c.device, buf->memory, 0, nbytes, 0, &mapped);
@@ -252,6 +287,21 @@ void VulkanBackend::download(Buffer* buf, void* data, size_t nbytes) {
 
 void VulkanBackend::dispatch(Pipeline& pipeline, std::span<Buffer*> buffers, std::span<const std::byte> push_data, std::array<uint32_t, 3> groups) {
   auto& c = ctx();
+  auto& b = batch();
+
+  if(!b.open) {
+    VkCommandBufferAllocateInfo cmd_alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cmd_alloc.commandPool        = c.command_pool;
+    cmd_alloc.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmd_alloc.commandBufferCount = 1;
+    vkAllocateCommandBuffers(c.device, &cmd_alloc, &b.cmd);
+
+    VkCommandBufferBeginInfo begin_info{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(b.cmd, &begin_info);
+    b.open               = true;
+    b.has_prior_dispatch = false;
+  }
 
   VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, pipeline.binding_count};
   VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -260,6 +310,7 @@ void VulkanBackend::dispatch(Pipeline& pipeline, std::span<Buffer*> buffers, std
   pool_info.pPoolSizes    = &pool_size;
   VkDescriptorPool desc_pool;
   vkCreateDescriptorPool(c.device, &pool_info, nullptr, &desc_pool);
+  b.pending_desc_pools.push_back(desc_pool);
 
   VkDescriptorSetAllocateInfo set_alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
   set_alloc.descriptorPool     = desc_pool;
@@ -281,34 +332,26 @@ void VulkanBackend::dispatch(Pipeline& pipeline, std::span<Buffer*> buffers, std
   }
   vkUpdateDescriptorSets(c.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
-  VkCommandBufferAllocateInfo cmd_alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-  cmd_alloc.commandPool        = c.command_pool;
-  cmd_alloc.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-  cmd_alloc.commandBufferCount = 1;
-  VkCommandBuffer cmd;
-  vkAllocateCommandBuffers(c.device, &cmd_alloc, &cmd);
-
-  VkCommandBufferBeginInfo begin_info{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-  begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  vkBeginCommandBuffer(cmd, &begin_info);
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.layout, 0, 1, &desc_set, 0, nullptr);
-  if(!push_data.empty()) {
-    vkCmdPushConstants(cmd, pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, static_cast<uint32_t>(push_data.size()), push_data.data());
+  // Chained dispatches commonly read a prior dispatch's output via the same storage buffers; a full shader-write/read barrier avoids per-dispatch buffer-aliasing analysis.
+  if(b.has_prior_dispatch) {
+    VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    vkCmdPipelineBarrier(b.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
   }
-  vkCmdDispatch(cmd, groups[0], groups[1], groups[2]);
-  vkEndCommandBuffer(cmd);
 
-  VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-  submit.commandBufferCount = 1;
-  submit.pCommandBuffers    = &cmd;
-  vkQueueSubmit(c.queue, 1, &submit, VK_NULL_HANDLE);
-  vkQueueWaitIdle(c.queue);
-
-  vkFreeCommandBuffers(c.device, c.command_pool, 1, &cmd);
-  vkDestroyDescriptorPool(c.device, desc_pool, nullptr);
+  vkCmdBindPipeline(b.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
+  vkCmdBindDescriptorSets(b.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.layout, 0, 1, &desc_set, 0, nullptr);
+  if(!push_data.empty()) {
+    vkCmdPushConstants(b.cmd, pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, static_cast<uint32_t>(push_data.size()), push_data.data());
+  }
+  vkCmdDispatch(b.cmd, groups[0], groups[1], groups[2]);
+  b.has_prior_dispatch = true;
 }
 
-void VulkanBackend::wait_idle() { vkDeviceWaitIdle(ctx().device); }
+void VulkanBackend::wait_idle() {
+  flush_batch();
+  vkDeviceWaitIdle(ctx().device);
+}
 
 } // namespace mkx
