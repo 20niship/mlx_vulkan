@@ -1,3 +1,6 @@
+#ifdef MKX_USE_VMA
+#define VMA_IMPLEMENTATION
+#endif
 #include <mkx/vulkan/vulkan_backend.hpp>
 
 #include <mkx/shaders/shader_source.hpp>
@@ -6,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unistd.h>
@@ -16,6 +20,15 @@ namespace mkx {
 
 namespace {
 
+#ifdef MKX_ENABLE_VALIDATION
+VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT /*type*/,
+                                               const VkDebugUtilsMessengerCallbackDataEXT* data, void* /*user_data*/) {
+  const char* tag = (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) ? "ERROR" : (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) ? "WARN" : "INFO";
+  fprintf(stderr, "[mkx][validation][%s] %s\n", tag, data->pMessage);
+  return VK_FALSE;
+}
+#endif
+
 struct Context {
   VkInstance instance        = VK_NULL_HANDLE;
   VkPhysicalDevice physical  = VK_NULL_HANDLE;
@@ -23,33 +36,82 @@ struct Context {
   VkQueue queue              = VK_NULL_HANDLE;
   uint32_t queue_family      = 0;
   VkCommandPool command_pool = VK_NULL_HANDLE;
+#ifdef MKX_ENABLE_VALIDATION
+  VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;
+#endif
+#ifdef MKX_USE_VMA
+  VmaAllocator allocator = VK_NULL_HANDLE;
+#endif
 
   Context() {
     VkApplicationInfo app_info{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app_info.pApplicationName = "mkx";
     app_info.apiVersion       = VK_API_VERSION_1_3;
 
-    // MoltenVKはVK_KHR_portability_enumeration必須、Linux+lavapipe等には無いため存在する場合のみ有効化する。
-    const char* portability_enum_ext = "VK_KHR_portability_enumeration";
-    uint32_t inst_ext_count          = 0;
+    uint32_t inst_ext_count = 0;
     vkEnumerateInstanceExtensionProperties(nullptr, &inst_ext_count, nullptr);
     std::vector<VkExtensionProperties> inst_exts(inst_ext_count);
     vkEnumerateInstanceExtensionProperties(nullptr, &inst_ext_count, inst_exts.data());
-    bool has_portability_enum = false;
+
+    // MoltenVKはVK_KHR_portability_enumeration必須、Linux+lavapipe等には無いため存在する場合のみ有効化する。
+    const char* portability_enum_ext = "VK_KHR_portability_enumeration";
+    bool has_portability_enum        = false;
     for(auto& e : inst_exts) {
       if(std::string_view(e.extensionName) == portability_enum_ext) has_portability_enum = true;
     }
 
-    VkInstanceCreateInfo instance_info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
-    instance_info.pApplicationInfo = &app_info;
-    if(has_portability_enum) {
-      instance_info.flags                   = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
-      instance_info.enabledExtensionCount   = 1;
-      instance_info.ppEnabledExtensionNames = &portability_enum_ext;
+    std::vector<const char*> inst_extensions;
+    if(has_portability_enum) inst_extensions.push_back(portability_enum_ext);
+
+    std::vector<const char*> inst_layers;
+#ifdef MKX_ENABLE_VALIDATION
+    // 診断ビルドのみ: レイヤ自体の有無を確認してから有効化(未インストール環境でvkCreateInstanceを失敗させない)。
+    bool has_debug_utils = false;
+    for(auto& e : inst_exts) {
+      if(std::string_view(e.extensionName) == VK_EXT_DEBUG_UTILS_EXTENSION_NAME) has_debug_utils = true;
     }
+    uint32_t layer_count = 0;
+    vkEnumerateInstanceLayerProperties(&layer_count, nullptr);
+    std::vector<VkLayerProperties> layers(layer_count);
+    vkEnumerateInstanceLayerProperties(&layer_count, layers.data());
+    bool has_validation_layer = false;
+    for(auto& l : layers) {
+      if(std::string_view(l.layerName) == "VK_LAYER_KHRONOS_validation") has_validation_layer = true;
+    }
+    if(has_validation_layer && has_debug_utils) {
+      inst_layers.push_back("VK_LAYER_KHRONOS_validation");
+      inst_extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    } else {
+      fprintf(stderr, "[mkx] MKX_ENABLE_VALIDATION requested but VK_LAYER_KHRONOS_validation/VK_EXT_debug_utils not available; skipping.\n");
+    }
+#endif
+
+    VkInstanceCreateInfo instance_info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+    instance_info.pApplicationInfo        = &app_info;
+    instance_info.enabledExtensionCount   = static_cast<uint32_t>(inst_extensions.size());
+    instance_info.ppEnabledExtensionNames = inst_extensions.data();
+    instance_info.enabledLayerCount       = static_cast<uint32_t>(inst_layers.size());
+    instance_info.ppEnabledLayerNames     = inst_layers.data();
+    if(has_portability_enum) instance_info.flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+
+#ifdef MKX_ENABLE_VALIDATION
+    VkDebugUtilsMessengerCreateInfoEXT messenger_info{VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
+    messenger_info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    messenger_info.messageType     = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    messenger_info.pfnUserCallback = debug_callback;
+    if(!inst_layers.empty()) instance_info.pNext = &messenger_info; // instance生成時点からのメッセージも捕捉する
+#endif
+
     if(vkCreateInstance(&instance_info, nullptr, &instance) != VK_SUCCESS) {
       throw std::runtime_error("mkx: vkCreateInstance failed");
     }
+
+#ifdef MKX_ENABLE_VALIDATION
+    if(!inst_layers.empty()) {
+      auto create_fn = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT"));
+      if(create_fn) create_fn(instance, &messenger_info, nullptr, &debug_messenger);
+    }
+#endif
 
     uint32_t device_count = 0;
     vkEnumeratePhysicalDevices(instance, &device_count, nullptr);
@@ -101,6 +163,33 @@ struct Context {
     pool_info.flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     pool_info.queueFamilyIndex = queue_family;
     vkCreateCommandPool(device, &pool_info, nullptr, &command_pool);
+
+#ifdef MKX_USE_VMA
+    VmaAllocatorCreateInfo vma_info{};
+    vma_info.physicalDevice = physical;
+    vma_info.device         = device;
+    vma_info.instance       = instance;
+    vma_info.vulkanApiVersion = VK_API_VERSION_1_3;
+    vmaCreateAllocator(&vma_info, &allocator);
+#endif
+  }
+
+  // 破棄しないとvalidation layerのobject-leak検出(プロセス終了時のvkDestroyInstance相当)が機能しない。
+  ~Context() {
+    if(device == VK_NULL_HANDLE) return;
+    vkDeviceWaitIdle(device);
+#ifdef MKX_USE_VMA
+    if(allocator) vmaDestroyAllocator(allocator);
+#endif
+    if(command_pool) vkDestroyCommandPool(device, command_pool, nullptr);
+    vkDestroyDevice(device, nullptr);
+#ifdef MKX_ENABLE_VALIDATION
+    if(debug_messenger) {
+      auto destroy_fn = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT"));
+      if(destroy_fn) destroy_fn(instance, debug_messenger, nullptr);
+    }
+#endif
+    if(instance) vkDestroyInstance(instance, nullptr);
   }
 };
 
@@ -257,6 +346,68 @@ std::unordered_map<size_t, std::vector<VulkanBackend::Buffer*>>& free_list() {
   return pool;
 }
 
+#ifdef MKX_USE_VMA
+
+// VMAが自前でブロック単位に再利用するため、kMaxPooledPerSize/kMaxPooledTotalの自作プールは不要(free()は素直にvmaDestroyBuffer)。
+
+VulkanBackend::Buffer* VulkanBackend::alloc(size_t nbytes) {
+  auto& c   = ctx();
+  auto* buf = new Buffer();
+  buf->size = nbytes;
+
+  VkBufferCreateInfo buffer_info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  buffer_info.size        = nbytes;
+  buffer_info.usage       = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+  VmaAllocationCreateInfo alloc_info{};
+  alloc_info.usage = VMA_MEMORY_USAGE_AUTO;
+  alloc_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+
+  if(vmaCreateBuffer(c.allocator, &buffer_info, &alloc_info, &buf->buffer, &buf->allocation, nullptr) != VK_SUCCESS) {
+    throw std::runtime_error("mkx: vmaCreateBuffer failed (nbytes=" + std::to_string(nbytes) + ")");
+  }
+  return buf;
+}
+
+void VulkanBackend::free(Buffer* buf) {
+  if(!buf) return;
+  wait_idle();
+  vmaDestroyBuffer(ctx().allocator, buf->buffer, buf->allocation);
+  delete buf;
+}
+
+void VulkanBackend::upload(Buffer* buf, const void* data, size_t nbytes) {
+  auto& c      = ctx();
+  void* mapped = nullptr;
+  if(vmaMapMemory(c.allocator, buf->allocation, &mapped) != VK_SUCCESS) {
+    throw std::runtime_error("mkx: vmaMapMemory failed in upload (nbytes=" + std::to_string(nbytes) + ")");
+  }
+  std::memcpy(mapped, data, nbytes);
+  vmaUnmapMemory(c.allocator, buf->allocation);
+}
+
+void VulkanBackend::download(Buffer* buf, void* data, size_t nbytes) {
+  flush_batch();
+  auto& c      = ctx();
+  void* mapped = nullptr;
+  if(vmaMapMemory(c.allocator, buf->allocation, &mapped) != VK_SUCCESS) {
+    throw std::runtime_error("mkx: vmaMapMemory failed in download (nbytes=" + std::to_string(nbytes) + ")");
+  }
+  std::memcpy(data, mapped, nbytes);
+  vmaUnmapMemory(c.allocator, buf->allocation);
+}
+
+std::string VulkanBackend::debug_stats() {
+  char* json = nullptr;
+  vmaBuildStatsString(ctx().allocator, &json, VK_TRUE);
+  std::string result = json ? json : "";
+  vmaFreeStatsString(ctx().allocator, json);
+  return result;
+}
+
+#else
+
 VulkanBackend::Buffer* VulkanBackend::alloc(size_t nbytes) {
   auto& pool = free_list();
   auto it    = pool.find(nbytes);
@@ -330,6 +481,19 @@ void VulkanBackend::download(Buffer* buf, void* data, size_t nbytes) {
   std::memcpy(data, mapped, nbytes);
   vkUnmapMemory(c.device, buf->memory);
 }
+
+std::string VulkanBackend::debug_stats() {
+  size_t count = 0, bytes = 0;
+  for(auto& [size, bufs] : free_list()) {
+    count += bufs.size();
+    bytes += size * bufs.size();
+  }
+  std::ostringstream os;
+  os << "mkx pool: " << count << " buffers pooled (cap=" << kMaxPooledTotal << "), " << (bytes / (1024.0 * 1024.0)) << " MiB retained across " << free_list().size() << " distinct sizes";
+  return os.str();
+}
+
+#endif
 
 void VulkanBackend::dispatch(Pipeline& pipeline, std::span<Buffer*> buffers, std::span<const std::byte> push_data, std::array<uint32_t, 3> groups) {
   auto& c = ctx();
