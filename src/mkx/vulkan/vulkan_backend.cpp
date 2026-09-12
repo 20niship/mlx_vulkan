@@ -111,14 +111,14 @@ Context& ctx() {
 
 // 旧実装はdispatch()ごとにcommand buffer alloc+submit+vkQueueWaitIdleしており、1 evalあたりの実dispatch数に比例したCPU側オーバーヘッドが支配的だった。同一eval()内のdispatchをここに積み、次のwait_idle()で1回のsubmit+waitにまとめる(descriptor poolは実行完了までpendingに保持)。
 struct Batch {
-  VkCommandBuffer cmd             = VK_NULL_HANDLE;
-  bool open                       = false;
-  bool has_prior_dispatch         = false;
+  VkCommandBuffer cmd     = VK_NULL_HANDLE;
+  bool open               = false;
+  bool has_prior_dispatch = false;
   std::vector<VkDescriptorPool> pending_desc_pools;
   // 容量を使い切るまで使い回すpool(vkCreate/DestroyDescriptorPoolの呼び出し回数を減らす。尽きたら新しいpoolをpending_desc_poolsに追加)。
-  VkDescriptorPool current_pool = VK_NULL_HANDLE;
-  uint32_t current_pool_sets_used = 0;
-  static constexpr uint32_t kPoolSetCapacity = 64;
+  VkDescriptorPool current_pool                  = VK_NULL_HANDLE;
+  uint32_t current_pool_sets_used                = 0;
+  static constexpr uint32_t kPoolSetCapacity     = 64;
   static constexpr uint32_t kPoolBindingCapacity = 4096;
 };
 
@@ -250,7 +250,7 @@ VulkanBackend::Pipeline VulkanBackend::compile(std::string_view source, size_t /
 constexpr size_t kMaxPooledPerSize = 64;
 // バケット横断のグローバルcap(安全弁)。実測ではcapを2048→256まで絞ってもwired page数の暴れと長時間学習でのクラッシュ挙動は変わらず、原因はこのプールではなくMoltenVK/Vulkanドライバ側のメモリ挙動と判断(詳細はdocs/perf-issuesの記録を参照)。
 constexpr size_t kMaxPooledTotal = 1024;
-size_t g_pooled_total = 0;
+size_t g_pooled_total            = 0;
 
 std::unordered_map<size_t, std::vector<VulkanBackend::Buffer*>>& free_list() {
   static std::unordered_map<size_t, std::vector<VulkanBackend::Buffer*>> pool;
@@ -296,8 +296,8 @@ void VulkanBackend::free(Buffer* buf) {
   if(!buf) return;
   // A pending batch may still hold a dispatch that reads/writes buf; pooling/destroying it now would let alloc() hand the same memory to a new buffer while that GPU work is still in flight (VK_ERROR_MEMORY_MAP_FAILED). Flush+wait first so it's safe to reuse.
   wait_idle();
-  auto& pool  = free_list();
-  auto& slot  = pool[buf->size];
+  auto& pool = free_list();
+  auto& slot = pool[buf->size];
   if(slot.size() < kMaxPooledPerSize && g_pooled_total < kMaxPooledTotal) {
     slot.push_back(buf);
     g_pooled_total++;

@@ -188,7 +188,9 @@ struct OpNode {
 
   // gpu_bufferはbackend非依存void*で型消去されているため解放はBackendを知るeval_node側がここに設定するコールバックで行う。View/CustomKernelOutput(バッファ共有のみ)は未設定のため二重解放にならない。
   std::function<void()> free_gpu_buffer;
-  ~OpNode() { if(free_gpu_buffer) free_gpu_buffer(); }
+  ~OpNode() {
+    if(free_gpu_buffer) free_gpu_buffer();
+  }
 };
 
 using NodePtr = std::shared_ptr<OpNode>;

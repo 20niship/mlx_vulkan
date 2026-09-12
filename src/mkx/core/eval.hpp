@@ -113,7 +113,7 @@ template <ComputeBackend Backend> void eval_node(OpNode& node, std::unordered_ma
     Backend::upload(out, result.data(), result.size() * sizeof(float));
     node.gpu_buffer      = out;
     node.free_gpu_buffer = [&node]() { Backend::free(static_cast<typename Backend::Buffer*>(node.gpu_buffer)); };
-    node.evaluated        = true;
+    node.evaluated       = true;
     return;
   }
 
@@ -151,7 +151,7 @@ template <ComputeBackend Backend> void eval_node(OpNode& node, std::unordered_ma
 
   node.gpu_buffer      = out;
   node.free_gpu_buffer = [&node]() { Backend::free(static_cast<typename Backend::Buffer*>(node.gpu_buffer)); };
-  node.evaluated        = true;
+  node.evaluated       = true;
 }
 
 } // namespace detail
