@@ -248,6 +248,9 @@ VulkanBackend::Pipeline VulkanBackend::compile(std::string_view source, size_t /
 
 // OpNodeは1ステップごとに新規でalloc/freeされる(gpu_bufferはeval()単位で使い捨て)ため、サイズ別free-listでVkBuffer/VkDeviceMemory実体を使い回しvkAllocateMemory/vkCreateBufferの呼び出し頻度を下げる。1サイズあたりkMaxPooledPerSizeを超える分は素直に破棄する。
 constexpr size_t kMaxPooledPerSize = 64;
+// バケット横断のグローバルcap(安全弁)。実測ではcapを2048→256まで絞ってもwired page数の暴れと長時間学習でのクラッシュ挙動は変わらず、原因はこのプールではなくMoltenVK/Vulkanドライバ側のメモリ挙動と判断(詳細はdocs/perf-issuesの記録を参照)。
+constexpr size_t kMaxPooledTotal = 1024;
+size_t g_pooled_total = 0;
 
 std::unordered_map<size_t, std::vector<VulkanBackend::Buffer*>>& free_list() {
   static std::unordered_map<size_t, std::vector<VulkanBackend::Buffer*>> pool;
@@ -260,6 +263,7 @@ VulkanBackend::Buffer* VulkanBackend::alloc(size_t nbytes) {
   if(it != pool.end() && !it->second.empty()) {
     auto* buf = it->second.back();
     it->second.pop_back();
+    g_pooled_total--;
     return buf;
   }
 
@@ -271,24 +275,32 @@ VulkanBackend::Buffer* VulkanBackend::alloc(size_t nbytes) {
   buffer_info.size        = nbytes;
   buffer_info.usage       = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
   buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  vkCreateBuffer(c.device, &buffer_info, nullptr, &buf->buffer);
+  if(vkCreateBuffer(c.device, &buffer_info, nullptr, &buf->buffer) != VK_SUCCESS) {
+    throw std::runtime_error("mkx: vkCreateBuffer failed (nbytes=" + std::to_string(nbytes) + ")");
+  }
 
   VkMemoryRequirements reqs;
   vkGetBufferMemoryRequirements(c.device, buf->buffer, &reqs);
   VkMemoryAllocateInfo alloc_info{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
   alloc_info.allocationSize  = reqs.size;
   alloc_info.memoryTypeIndex = find_memory_type(c.physical, reqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-  vkAllocateMemory(c.device, &alloc_info, nullptr, &buf->memory);
+  // Silent failures here previously left buf->memory as VK_NULL_HANDLE; later vkMapMemory on it fails too (also unchecked), and the ensuing memcpy into a garbage pointer corrupts state until the OS kills the process -- surface the real error instead.
+  if(vkAllocateMemory(c.device, &alloc_info, nullptr, &buf->memory) != VK_SUCCESS) {
+    throw std::runtime_error("mkx: vkAllocateMemory failed (size=" + std::to_string(reqs.size) + ") -- likely too many live VkDeviceMemory allocations");
+  }
   vkBindBufferMemory(c.device, buf->buffer, buf->memory, 0);
   return buf;
 }
 
 void VulkanBackend::free(Buffer* buf) {
   if(!buf) return;
+  // A pending batch may still hold a dispatch that reads/writes buf; pooling/destroying it now would let alloc() hand the same memory to a new buffer while that GPU work is still in flight (VK_ERROR_MEMORY_MAP_FAILED). Flush+wait first so it's safe to reuse.
+  wait_idle();
   auto& pool  = free_list();
   auto& slot  = pool[buf->size];
-  if(slot.size() < kMaxPooledPerSize) {
+  if(slot.size() < kMaxPooledPerSize && g_pooled_total < kMaxPooledTotal) {
     slot.push_back(buf);
+    g_pooled_total++;
     return;
   }
   auto& c = ctx();
@@ -300,7 +312,9 @@ void VulkanBackend::free(Buffer* buf) {
 void VulkanBackend::upload(Buffer* buf, const void* data, size_t nbytes) {
   auto& c      = ctx();
   void* mapped = nullptr;
-  vkMapMemory(c.device, buf->memory, 0, nbytes, 0, &mapped);
+  if(vkMapMemory(c.device, buf->memory, 0, nbytes, 0, &mapped) != VK_SUCCESS) {
+    throw std::runtime_error("mkx: vkMapMemory failed in upload (nbytes=" + std::to_string(nbytes) + ")");
+  }
   std::memcpy(mapped, data, nbytes);
   vkUnmapMemory(c.device, buf->memory);
 }
@@ -310,7 +324,9 @@ void VulkanBackend::download(Buffer* buf, void* data, size_t nbytes) {
   flush_batch();
   auto& c      = ctx();
   void* mapped = nullptr;
-  vkMapMemory(c.device, buf->memory, 0, nbytes, 0, &mapped);
+  if(vkMapMemory(c.device, buf->memory, 0, nbytes, 0, &mapped) != VK_SUCCESS) {
+    throw std::runtime_error("mkx: vkMapMemory failed in download (nbytes=" + std::to_string(nbytes) + ")");
+  }
   std::memcpy(data, mapped, nbytes);
   vkUnmapMemory(c.device, buf->memory);
 }
