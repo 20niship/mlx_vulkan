@@ -7,6 +7,10 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# 診断用オプション。デフォルトOFF(挙動・依存関係を変えない)。メモリリーク調査時に片方/両方ONにして使う。
+option(MKX_ENABLE_VALIDATION "Enable VK_LAYER_KHRONOS_validation + debug messenger (diagnostics only)" OFF)
+option(MKX_USE_VMA "Use AMD VulkanMemoryAllocator instead of the hand-rolled buffer pool (diagnostics only)" OFF)
+
 find_package(Vulkan REQUIRED)
 
 add_library(mkx
@@ -14,6 +18,22 @@ add_library(mkx
 )
 target_include_directories(mkx PUBLIC src)
 target_link_libraries(mkx PUBLIC Vulkan::Vulkan)
+
+if(MKX_ENABLE_VALIDATION)
+    target_compile_definitions(mkx PUBLIC MKX_ENABLE_VALIDATION=1)
+endif()
+
+if(MKX_USE_VMA)
+    include(FetchContent)
+    FetchContent_Declare(
+        vma
+        GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+        GIT_TAG v3.1.0
+    )
+    FetchContent_MakeAvailable(vma)
+    target_include_directories(mkx PUBLIC ${vma_SOURCE_DIR}/include)
+    target_compile_definitions(mkx PUBLIC MKX_USE_VMA=1)
+endif()
 
 include(FetchContent)
 FetchContent_Declare(

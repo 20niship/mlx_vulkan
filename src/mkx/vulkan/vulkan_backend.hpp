@@ -4,9 +4,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <string_view>
 
 #include <vulkan/vulkan.h>
+
+#ifdef MKX_USE_VMA
+#include <vk_mem_alloc.h>
+#endif
 
 namespace mkx {
 
@@ -15,6 +20,9 @@ struct VulkanBackend {
     VkBuffer buffer       = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     size_t size           = 0;
+#ifdef MKX_USE_VMA
+    VmaAllocation allocation = VK_NULL_HANDLE;
+#endif
   };
 
   struct Pipeline {
@@ -32,6 +40,9 @@ struct VulkanBackend {
   static void download(Buffer* buf, void* data, size_t nbytes);
   static void dispatch(Pipeline& pipeline, std::span<Buffer*> buffers, std::span<const std::byte> push_data, std::array<uint32_t, 3> groups);
   static void wait_idle();
+
+  // Live allocator/pool stats (buffer count + bytes currently retained), for leak diagnostics. Cheap; safe to poll between benchmark iterations.
+  static std::string debug_stats();
 };
 
 } // namespace mkx
