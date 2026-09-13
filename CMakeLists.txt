@@ -60,7 +60,6 @@ add_executable(mkx_tests
     tests/test_phase7_collision.cpp
     tests/test_phase7_solver.cpp
     tests/test_graph_composite.cpp
-    tests/test_fuse.cpp
     tests/test_persistent_generic.cpp
 )
 target_include_directories(mkx_tests PRIVATE tests)

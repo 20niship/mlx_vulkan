@@ -16,11 +16,7 @@ using mkx::VulkanBackend;
 
 namespace {
 mkx::array<float, 1> make1(std::vector<float> data) {
-  auto a = mkx::zeros<float, 1>({static_cast<int64_t>(data.size())});
-  mkx::eval<VulkanBackend>(a);
-  auto* buf = static_cast<VulkanBackend::Buffer*>(a.node()->gpu_buffer);
-  VulkanBackend::upload(buf, data.data(), data.size() * sizeof(float));
-  return a;
+  return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())});
 }
 
 mkx::array<float, 1> const1(float v, int64_t n) { return make1(std::vector<float>(static_cast<size_t>(n), v)); }
@@ -39,8 +35,8 @@ TEST_CASE("複合グラフ: ベクトル正規化(square+sum+sqrt+where+broadcas
   auto safe_norm_b = mkx::broadcast_to(safe_norm, mkx::Shape{2});
   auto normalized  = mkx::divide(v, safe_norm_b);
 
-  mkx::eval<VulkanBackend>(normalized);
-  auto out = normalized.to_vector<VulkanBackend>();
+  mkx::eval(normalized);
+  auto out = normalized.to_vector();
 
   float cpu_norm = std::sqrt(3.0f * 3.0f + 4.0f * 4.0f);
   REQUIRE(out.size() == 2);
@@ -60,10 +56,10 @@ TEST_CASE("複合グラフ: 距離計算+clip(sub+square+sum+sqrt+clip)") {
   auto hi      = const1(4.0f, 1);
   auto clipped = mkx::clip(dist, lo, hi);
 
-  mkx::eval<VulkanBackend>(dist, clipped);
+  mkx::eval(dist, clipped);
   float cpu_dist = std::sqrt(3.0f * 3.0f + 4.0f * 4.0f + 0.0f * 0.0f);
-  CHECK(dist.to_vector<VulkanBackend>()[0] == doctest::Approx(cpu_dist));
-  CHECK(clipped.to_vector<VulkanBackend>()[0] == doctest::Approx(std::min(cpu_dist, 4.0f)));
+  CHECK(dist.to_vector()[0] == doctest::Approx(cpu_dist));
+  CHECK(clipped.to_vector()[0] == doctest::Approx(std::min(cpu_dist, 4.0f)));
 }
 
 // 運動エネルギー計算(0.5*sum(v^2))をmax capでclipするパターン。reduction+elementwiseの混在。
@@ -75,10 +71,10 @@ TEST_CASE("複合グラフ: 運動エネルギー計算+上限clip(square+sum+mu
   auto hi     = const1(5.0f, 1);
   auto capped = mkx::clip(energy, lo, hi);
 
-  mkx::eval<VulkanBackend>(energy, capped);
+  mkx::eval(energy, capped);
   float cpu_energy = 0.5f * (1 * 1 + 2 * 2 + 3 * 3);
-  CHECK(energy.to_vector<VulkanBackend>()[0] == doctest::Approx(cpu_energy));
-  CHECK(capped.to_vector<VulkanBackend>()[0] == doctest::Approx(std::min(cpu_energy, 5.0f)));
+  CHECK(energy.to_vector()[0] == doctest::Approx(cpu_energy));
+  CHECK(capped.to_vector()[0] == doctest::Approx(std::min(cpu_energy, 5.0f)));
 }
 
 namespace {
@@ -126,8 +122,8 @@ TEST_CASE("複合グラフ: CPUフォールバック(cholesky+solve_triangular)�
   auto vmin      = const1(-100.0f, 2);
   auto v_clamped = mkx::clip(v_new, vmin, vmax);
 
-  mkx::eval<VulkanBackend>(v_clamped);
-  auto gpu_v = v_clamped.to_vector<VulkanBackend>();
+  mkx::eval(v_clamped);
+  auto gpu_v = v_clamped.to_vector();
 
   auto ref_l               = ref_cholesky(mass, 2);
   auto ref_a               = ref_forward_substitute(ref_l, force, 2);
@@ -168,8 +164,8 @@ TEST_CASE("複合グラフ: 大きめ行列積(8x16*16x8)を行方向で正規�
   auto row_sum_b   = mkx::broadcast_to(row_sum_col, mkx::Shape{M, N});
   auto normalized  = mkx::divide(c, row_sum_b);
 
-  mkx::eval<VulkanBackend>(normalized);
-  auto gpu = normalized.to_vector<VulkanBackend>();
+  mkx::eval(normalized);
+  auto gpu = normalized.to_vector();
 
   auto ref_c = ref_matmul(a_data, b_data, M, K, N);
   REQUIRE(gpu.size() == static_cast<size_t>(M * N));
@@ -201,9 +197,9 @@ TEST_CASE("複合グラフ: tril+triu-diagの恒等式(10x10)") {
   auto diff           = mkx::subtract(reconstructed, m);
   auto total_abs_diff = mkx::sum(mkx::abs(mkx::flatten(diff)));
 
-  mkx::eval<VulkanBackend>(reconstructed, total_abs_diff);
-  auto gpu_recon = reconstructed.to_vector<VulkanBackend>();
-  CHECK(total_abs_diff.to_vector<VulkanBackend>()[0] == doctest::Approx(0.0f));
+  mkx::eval(reconstructed, total_abs_diff);
+  auto gpu_recon = reconstructed.to_vector();
+  CHECK(total_abs_diff.to_vector()[0] == doctest::Approx(0.0f));
   for(size_t i = 0; i < m_data.size(); ++i) CHECK(gpu_recon[i] == doctest::Approx(m_data[i]));
 }
 
@@ -231,8 +227,8 @@ TEST_CASE("複合グラフ: 大きめCholesky(12x12)+CPUフォールバック出
 
   auto damped = mkx::multiply(mkx::sign(a), mkx::power(mkx::abs(a), const1(2.0f, n)));
 
-  mkx::eval<VulkanBackend>(damped);
-  auto gpu = damped.to_vector<VulkanBackend>();
+  mkx::eval(damped);
+  auto gpu = damped.to_vector();
 
   auto ref_l = ref_cholesky(m_data, n);
   auto ref_a = ref_forward_substitute(ref_l, force, n);
@@ -279,10 +275,10 @@ TEST_CASE("複合グラフ: バネダンパ力制限積分(clip/negative/multipl
   auto pe_terms         = mkx::multiply(x2, half_k_arr);
   auto potential_energy = mkx::sum(pe_terms);
 
-  mkx::eval<VulkanBackend>(new_x, new_v, potential_energy);
-  auto gpu_x   = new_x.to_vector<VulkanBackend>();
-  auto gpu_v   = new_v.to_vector<VulkanBackend>();
-  float gpu_pe = potential_energy.to_vector<VulkanBackend>()[0];
+  mkx::eval(new_x, new_v, potential_energy);
+  auto gpu_x   = new_x.to_vector();
+  auto gpu_v   = new_v.to_vector();
+  float gpu_pe = potential_energy.to_vector()[0];
 
   float ref_pe = 0.0f;
   for(int i = 0; i < n; ++i) {
@@ -331,10 +327,10 @@ TEST_CASE("複合グラフ: 回転+ノルム計算+安全正規化(sin/cos/squar
   auto unit_x        = mkx::divide(rx, safe_norm);
   auto unit_y        = mkx::divide(ry, safe_norm);
 
-  mkx::eval<VulkanBackend>(unit_x, unit_y, rnorm);
-  auto gpu_ux   = unit_x.to_vector<VulkanBackend>();
-  auto gpu_uy   = unit_y.to_vector<VulkanBackend>();
-  auto gpu_norm = rnorm.to_vector<VulkanBackend>();
+  mkx::eval(unit_x, unit_y, rnorm);
+  auto gpu_ux   = unit_x.to_vector();
+  auto gpu_uy   = unit_y.to_vector();
+  auto gpu_norm = rnorm.to_vector();
 
   for(int i = 0; i < n; ++i) {
     float c        = std::cos(theta_data[static_cast<size_t>(i)]);
@@ -372,15 +368,15 @@ TEST_CASE("複合グラフ: argmax/take整合性+比較・論理マスク合成(
   auto diff         = mkx::subtract(gathered_max, vmax);
   auto abs_diff     = mkx::sum(mkx::abs(diff));
 
-  mkx::eval<VulkanBackend>(count_max, gathered_max, abs_diff, inverted);
+  mkx::eval(count_max, gathered_max, abs_diff, inverted);
   float ref_max     = *std::max_element(values_data.begin(), values_data.end());
   int ref_count_max = static_cast<int>(std::count(values_data.begin(), values_data.end(), ref_max));
 
-  CHECK(count_max.to_vector<VulkanBackend>()[0] == doctest::Approx(static_cast<float>(ref_count_max)));
-  CHECK(gathered_max.to_vector<VulkanBackend>()[0] == doctest::Approx(ref_max));
-  CHECK(abs_diff.to_vector<VulkanBackend>()[0] == doctest::Approx(0.0f));
+  CHECK(count_max.to_vector()[0] == doctest::Approx(static_cast<float>(ref_count_max)));
+  CHECK(gathered_max.to_vector()[0] == doctest::Approx(ref_max));
+  CHECK(abs_diff.to_vector()[0] == doctest::Approx(0.0f));
 
-  auto inv = inverted.to_vector<VulkanBackend>();
+  auto inv = inverted.to_vector();
   for(int i = 0; i < n; ++i) {
     bool ref_above    = values_data[static_cast<size_t>(i)] > 4.0f;
     bool ref_is_max   = values_data[static_cast<size_t>(i)] == ref_max;
@@ -414,9 +410,9 @@ TEST_CASE("複合グラフ: A*A^T対称性+slice/concatenate再構築(transpose/
   auto diff2         = mkx::subtract(reconstructed, c);
   auto total_diff2   = mkx::sum(mkx::abs(mkx::flatten(diff2)));
 
-  mkx::eval<VulkanBackend>(c, combined, total_asym, total_diff2);
-  auto gpu_c        = c.to_vector<VulkanBackend>();
-  auto gpu_combined = combined.to_vector<VulkanBackend>();
+  mkx::eval(c, combined, total_asym, total_diff2);
+  auto gpu_c        = c.to_vector();
+  auto gpu_combined = combined.to_vector();
 
   std::vector<float> ref_c(static_cast<size_t>(M * M), 0.0f);
   for(int i = 0; i < M; ++i) {
@@ -431,8 +427,8 @@ TEST_CASE("複合グラフ: A*A^T対称性+slice/concatenate再構築(transpose/
   REQUIRE(gpu_c.size() == ref_c.size());
   for(size_t i = 0; i < ref_c.size(); ++i) CHECK(gpu_c[i] == doctest::Approx(ref_c[i]));
 
-  CHECK(total_asym.to_vector<VulkanBackend>()[0] == doctest::Approx(0.0f));
-  CHECK(total_diff2.to_vector<VulkanBackend>()[0] == doctest::Approx(0.0f));
+  CHECK(total_asym.to_vector()[0] == doctest::Approx(0.0f));
+  CHECK(total_diff2.to_vector()[0] == doctest::Approx(0.0f));
 
   for(int i = 0; i < M; ++i) {
     for(int j = 0; j < M; ++j) {
@@ -441,4 +437,42 @@ TEST_CASE("複合グラフ: A*A^T対称性+slice/concatenate再構築(transpose/
       CHECK(gpu_combined[static_cast<size_t>(i * M + j)] == doctest::Approx(expected));
     }
   }
+}
+
+// broadcast+add+mul+whereのfusion結果が非fusion時(eval()は常にfusionするため個別evalで代替比較)と一致し、クラスタに閉じたノードはバッファ未確保のままなことを検証する。
+TEST_CASE("複合グラフ: fusion後もbroadcast+add+mul+where+sqrt+addの結果が正しく、クラスタに閉じたノードはバッファ未確保") {
+  auto a    = const1(10.0f, 1);
+  auto b    = make1({1, 2, 3, 4});
+  auto c    = make1({2, 2, 2, 2});
+  auto cond = make1({1, 0, 1, 0});
+
+  auto a_bc   = mkx::broadcast_to(a, mkx::Shape{4});
+  auto t      = mkx::add(a_bc, b);
+  auto u      = mkx::multiply(t, c);
+  auto result = mkx::where(cond, u, t);
+  auto result2 = mkx::sqrt(result);
+  auto result3 = mkx::add(result, result2);
+
+  mkx::eval(result3);
+
+  auto v                     = result3.to_vector();
+  std::vector<float> b_data = {1, 2, 3, 4};
+  std::vector<float> c_data = {2, 2, 2, 2};
+  std::vector<float> cond_data = {1, 0, 1, 0};
+  for(int i = 0; i < 4; ++i) {
+    float t_ref      = 10.0f + b_data[static_cast<size_t>(i)];
+    float u_ref       = t_ref * c_data[static_cast<size_t>(i)];
+    float result_ref  = (cond_data[static_cast<size_t>(i)] != 0.0f) ? u_ref : t_ref;
+    float result2_ref = std::sqrt(result_ref);
+    float result3_ref = result_ref + result2_ref;
+    CHECK(v[static_cast<size_t>(i)] == doctest::Approx(result3_ref));
+  }
+
+  // where(result)は自身の消費者(sqrt, add)とも同じクラスタに吸収されるため、resultもresult2もバッファ化されない。
+  CHECK_FALSE(VulkanBackend::has_buffer(a_bc.node().get())); // add/mulに吸収されクラスタ内local変数のまま
+  CHECK(VulkanBackend::has_buffer(t.node().get()));          // whereから別クラスタとして読まれるため実体化
+  CHECK(VulkanBackend::has_buffer(u.node().get()));
+  CHECK_FALSE(VulkanBackend::has_buffer(result.node().get()));
+  CHECK_FALSE(VulkanBackend::has_buffer(result2.node().get()));
+  CHECK(VulkanBackend::has_buffer(result3.node().get())); // 最終要求出力
 }
