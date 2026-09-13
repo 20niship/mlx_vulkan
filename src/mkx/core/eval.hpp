@@ -327,7 +327,10 @@ template <class Backend> void eval_fused_cluster(const std::vector<NodePtr<Backe
   uint32_t groups_x = static_cast<uint32_t>((count + 255) / 256);
   Backend::dispatch(pit->second, bufs, {}, {groups_x, 1, 1});
 
-  for(auto& m : members) m->evaluated = true;
+  // 非materializeメンバはlocal変数のみで実バッファを持たないため、evaluated=trueにすると後の単独読み出しで未初期化バッファを返してしまう。
+  for(auto& m : members) {
+    if(materialized.count(m.get())) m->evaluated = true;
+  }
 }
 
 template <class Backend> void eval_node(OpNode<Backend>& node, std::unordered_map<size_t, typename Backend::Pipeline>& cache) {
