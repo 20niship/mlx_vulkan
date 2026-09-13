@@ -14,6 +14,7 @@
 #include <string>
 #include <unistd.h>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace mkx {
@@ -41,6 +42,7 @@ struct Context {
 #ifdef MKX_USE_VMA
   VmaAllocator allocator = VK_NULL_HANDLE;
 #endif
+  std::unordered_set<VulkanBackend::Buffer*> persistent_bufs;
 
   Context() {
     VkApplicationInfo app_info{VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -179,6 +181,17 @@ struct Context {
   ~Context() {
     if(device == VK_NULL_HANDLE) return;
     vkDeviceWaitIdle(device);
+    // register_persistentしたまま解除し忘れたバッファの安全網(通常はunregister_persistent+freeで空になっている)。
+    for(auto* buf : persistent_bufs) {
+#ifdef MKX_USE_VMA
+      vmaDestroyBuffer(allocator, buf->buffer, buf->allocation);
+#else
+      vkDestroyBuffer(device, buf->buffer, nullptr);
+      vkFreeMemory(device, buf->memory, nullptr);
+#endif
+      delete buf;
+    }
+    persistent_bufs.clear();
 #ifdef MKX_USE_VMA
     if(allocator) vmaDestroyAllocator(allocator);
 #endif
@@ -583,5 +596,8 @@ void VulkanBackend::wait_idle() {
   flush_batch();
   vkDeviceWaitIdle(ctx().device);
 }
+
+void VulkanBackend::register_persistent(Buffer* buf) { ctx().persistent_bufs.insert(buf); }
+void VulkanBackend::unregister_persistent(Buffer* buf) { ctx().persistent_bufs.erase(buf); }
 
 } // namespace mkx

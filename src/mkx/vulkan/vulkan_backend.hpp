@@ -41,6 +41,10 @@ struct VulkanBackend {
   static void dispatch(Pipeline& pipeline, std::span<Buffer*> buffers, std::span<const std::byte> push_data, std::array<uint32_t, 3> groups);
   static void wait_idle();
 
+  // 解除し忘れて残ったバッファをContextデストラクタで強制解放するための安全網登録。
+  static void register_persistent(Buffer* buf);
+  static void unregister_persistent(Buffer* buf);
+
   // Live allocator/pool stats (buffer count + bytes currently retained), for leak diagnostics. Cheap; safe to poll between benchmark iterations.
   static std::string debug_stats();
 };
