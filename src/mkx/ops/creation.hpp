@@ -50,4 +50,12 @@ template <class To, class From, size_t N, ComputeBackend Backend> array<To, N, B
   return array<To, N, Backend>(node);
 }
 
+template <ComputeBackend Backend = VulkanBackend> array<float, 1, Backend> zeros1f(int64_t n) { return zeros<float, 1, Backend>(Shape{n}); }
+
+template <ComputeBackend Backend = VulkanBackend> array<float, 2, Backend> zeros2f(int64_t n, int64_t m) { return zeros<float, 2, Backend>(Shape{n, m}); }
+
+template <ComputeBackend Backend = VulkanBackend> array<float, 1, Backend> ones1f(int64_t n) { return ones<float, 1, Backend>(Shape{n}); }
+
+template <ComputeBackend Backend = VulkanBackend> array<float, 2, Backend> ones2f(int64_t n, int64_t m) { return ones<float, 2, Backend>(Shape{n, m}); }
+
 } // namespace mkx

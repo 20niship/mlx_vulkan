@@ -23,13 +23,17 @@ public:
   }
 
 
-  template <ComputeBackend B = Backend>
-  explicit array1f(const std::vector<float>& data, Shape shape)
-    requires std::is_same_v<B, VulkanBackend>
-
-  const Shape& shape() const {
-    return node_->shape;
+  template <ComputeBackend B = Backend> static array array1f(const std::vector<float>& data, Shape shape) { //
+    return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())});
   }
+  template <ComputeBackend B = Backend> static array array1i(const std::vector<int32_t>& data, Shape shape) { //
+    return mkx::array<int32_t, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())});
+  }
+  template <ComputeBackend B = Backend> static array array2f(const std::vector<float>& data, Shape shape) { //
+    return mkx::array<float, 2>(data, mkx::Shape{static_cast<int64_t>(data.size() / shape[1]), shape[1]});
+  }
+
+  const Shape& shape() const { return node_->shape; }
   Dtype dtype() const { return node_->dtype; }
 
   NodePtr<Backend>& node() { return node_; }
