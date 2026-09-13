@@ -291,7 +291,7 @@ void main() {
 }
 )GLSL";
 
-// ponytail: タイル化なし素朴GEMM(M,Nはout_shape、Kはin_base_offset)、最適化は必要になったら。
+// ponytail: タイル化なし素朴GEMM(M,Nはout_shape、Kはin_base_offset、ndim==3ならout_shape=[B,M,N]のバッチGEMM)。
 inline constexpr std::string_view matmul_glsl = R"GLSL(
 layout(local_size_x = 256) in;
 layout(std430, binding = 0) readonly buffer A { float a[]; };
@@ -300,8 +300,22 @@ layout(std430, binding = 2) writeonly buffer OUT { float o[]; };
 void main() {
     uint i = gl_GlobalInvocationID.x;
     if (i >= pc.count) return;
-    uint N = pc.out_shape[1];
     uint K = pc.in_base_offset;
+    if (pc.ndim == 3u) {
+        uint M = pc.out_shape[1];
+        uint N = pc.out_shape[2];
+        uint batch = i / (M * N);
+        uint rem   = i % (M * N);
+        uint r = rem / N;
+        uint c = rem % N;
+        float acc = 0.0;
+        uint a_base = batch * M * K;
+        uint b_base = batch * K * N;
+        for (uint k = 0u; k < K; ++k) acc += a[a_base + r * K + k] * b[b_base + k * N + c];
+        o[i] = acc;
+        return;
+    }
+    uint N = pc.out_shape[1];
     uint r = i / N;
     uint c = i % N;
     float acc = 0.0;
