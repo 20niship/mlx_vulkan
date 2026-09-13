@@ -11,8 +11,7 @@
 
 using mkx::VulkanBackend;
 
-namespace {
-} // namespace
+namespace {} // namespace
 
 TEST_CASE("kinematics kernel: 2body(world+hinge子)1関節1geomで実機dispatchが完走する") {
   // body0=world(root), body1=hinge軸(0,0,1)でbody0から(0,0,1)オフセット
