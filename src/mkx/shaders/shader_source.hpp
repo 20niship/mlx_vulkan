@@ -104,7 +104,7 @@ inline std::vector<std::byte> pack_push(const Push& push) {
   return out;
 }
 
-inline Push build_push(const OpNode& node) {
+template <class Backend> Push build_push(const OpNode<Backend>& node) {
   Push push;
   push.count = static_cast<uint32_t>(shape_size(node.shape));
 

@@ -7,42 +7,47 @@
 #include <mkx/core/backend_concept.hpp>
 #include <mkx/core/op_node.hpp>
 #include <mkx/core/types.hpp>
+#include <mkx/vulkan/vulkan_backend.hpp>
 
 namespace mkx {
 
-template <class T, size_t N> class array {
+template <class T, size_t N, ComputeBackend Backend = VulkanBackend> class array {
 public:
-  array(Shape shape, DeviceTag device = DeviceTag::Vulkan) : device_(device), node_(make_node(OpType::Const, std::move(shape), dtype_of<T>())) {}
+  explicit array(Shape shape) : node_(make_node<Backend>(OpType::Const, std::move(shape), dtype_of())) {}
 
-  explicit array(NodePtr node, DeviceTag device = DeviceTag::Vulkan) : device_(device), node_(std::move(node)) {}
+  explicit array(NodePtr<Backend> node) : node_(std::move(node)) {}
+
+  // ホストデータをNodeにmemcpyしておくだけ(GPU uploadはeval時、Backend::get_or_allocateで確保したバッファへ行う)。
+  array(std::vector<T> data, Shape shape) : node_(make_node<Backend>(OpType::Const, std::move(shape), dtype_of())) {
+    node_->host_data.resize(data.size() * sizeof(T));
+    std::memcpy(node_->host_data.data(), data.data(), node_->host_data.size());
+  }
 
   const Shape& shape() const { return node_->shape; }
   Dtype dtype() const { return node_->dtype; }
-  DeviceTag device() const { return device_; }
 
-  NodePtr& node() { return node_; }
-  const NodePtr& node() const { return node_; }
+  NodePtr<Backend>& node() { return node_; }
+  const NodePtr<Backend>& node() const { return node_; }
 
-  template <ComputeBackend Backend> std::vector<T> to_vector() const {
-    assert(node_->evaluated && "eval<Backend>(arr) must be called before to_vector()");
-    auto* buf = static_cast<typename Backend::Buffer*>(node_->gpu_buffer);
+  std::vector<T> to_vector() const {
+    assert(node_->evaluated && "eval(arr) must be called before to_vector()");
+    auto* buf = buffer_for<Backend>(node_);
     std::vector<T> out(static_cast<size_t>(shape_size(node_->shape)));
     Backend::download(buf, out.data(), out.size() * sizeof(T));
     return out;
   }
 
-private:
-  template <class U> static constexpr Dtype dtype_of() {
-    if constexpr(std::is_same_v<U, float>)
+  static constexpr Dtype dtype_of() {
+    if constexpr(std::is_same_v<T, float>)
       return Dtype::Float32;
-    else if constexpr(std::is_same_v<U, int32_t>)
+    else if constexpr(std::is_same_v<T, int32_t>)
       return Dtype::Int32;
     else
       return Dtype::Bool;
   }
 
-  DeviceTag device_;
-  NodePtr node_;
+private:
+  NodePtr<Backend> node_;
 };
 
 } // namespace mkx
