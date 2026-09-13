@@ -11,23 +11,19 @@
 
 using mkx::VulkanBackend;
 
-namespace {
-mkx::array<float, 1> make1(std::vector<float> data) { return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())}); }
-} // namespace
-
 TEST_CASE("collision kernel: plane-meshで1つの接触点を検出する") {
   // geom0=plane(原点、法線+Z), geom1=mesh(1頂点、平面のz=0.3下に貫入)
   const int ng     = 2;
   const int npairs = 1;
 
-  auto geom_xpos  = make1({0, 0, 0, 0, 0, -0.3f});
-  auto geom_xmat  = make1({1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1});
-  auto mesh_verts = make1({0, 0, 0});
+  auto geom_xpos  = mkx::array<float, 1>::array1f({0, 0, 0, 0, 0, -0.3f}, mkx::Shape{});
+  auto geom_xmat  = mkx::array<float, 1>::array1f({1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1}, mkx::Shape{});
+  auto mesh_verts = mkx::array<float, 1>::array1f({0, 0, 0}, mkx::Shape{});
   // pair_data: g1,g2,type1,type2,margin,rbound_sum
-  auto pair_data    = make1({0, 1, 0, 7, 0, 100});
-  auto mesh_vertadr = make1({0});
-  auto mesh_vertnum = make1({1});
-  auto geom_dataid  = make1({0, 0});
+  auto pair_data    = mkx::array<float, 1>::array1f({0, 1, 0, 7, 0, 100}, mkx::Shape{});
+  auto mesh_vertadr = mkx::array<float, 1>::array1f({0}, mkx::Shape{});
+  auto mesh_vertnum = mkx::array<float, 1>::array1f({1}, mkx::Shape{});
+  auto geom_dataid  = mkx::array<float, 1>::array1f({0, 0}, mkx::Shape{});
 
   auto kernel  = mkx::mujoco::make_collision_kernel(ng, npairs);
   auto outputs = kernel({geom_xpos, geom_xmat, mesh_verts, pair_data, mesh_vertadr, mesh_vertnum, geom_dataid}, {mkx::Shape{128 * 8}, mkx::Shape{1}}, {1, 1, 1}, {1, 1, 1});

@@ -15,14 +15,13 @@
 using mkx::VulkanBackend;
 
 namespace {
-mkx::array<float, 1> make1(std::vector<float> data) { return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())}); }
 
-mkx::array<float, 1> const1(float v, int64_t n) { return make1(std::vector<float>(static_cast<size_t>(n), v)); }
+mkx::array<float, 1> const1(float v, int64_t n) { return mkx::array<float, 1>::array1f(std::vector<float>(static_cast<size_t>(n), v), mkx::Shape{}); }
 } // namespace
 
 // MuJoCo-MLX-Cppのmkx_qnorm(kinematics.hpp)相当: sqrt(sum(square(v)))をwhereでゼロ割保護しつつ正規化する複合グラフ。
 TEST_CASE("複合グラフ: ベクトル正規化(square+sum+sqrt+where+broadcast)") {
-  auto v      = make1({3, 4});
+  auto v      = mkx::array<float, 1>::array1f({3, 4}, mkx::Shape{});
   auto sq     = mkx::square(v);
   auto sum_sq = mkx::sum(sq);
   auto norm   = mkx::sqrt(sum_sq);
@@ -44,8 +43,8 @@ TEST_CASE("複合グラフ: ベクトル正規化(square+sum+sqrt+where+broadcas
 
 // 衝突距離計算のような「sqrt(distsq)をclipでmax距離にクランプする」パターン。
 TEST_CASE("複合グラフ: 距離計算+clip(sub+square+sum+sqrt+clip)") {
-  auto p1     = make1({0, 0, 0});
-  auto p2     = make1({3, 4, 0});
+  auto p1     = mkx::array<float, 1>::array1f({0, 0, 0}, mkx::Shape{});
+  auto p2     = mkx::array<float, 1>::array1f({3, 4, 0}, mkx::Shape{});
   auto diff   = mkx::subtract(p2, p1);
   auto distsq = mkx::sum(mkx::square(diff));
   auto dist   = mkx::sqrt(distsq);
@@ -62,7 +61,7 @@ TEST_CASE("複合グラフ: 距離計算+clip(sub+square+sum+sqrt+clip)") {
 
 // 運動エネルギー計算(0.5*sum(v^2))をmax capでclipするパターン。reduction+elementwiseの混在。
 TEST_CASE("複合グラフ: 運動エネルギー計算+上限clip(square+sum+mul+clip)") {
-  auto v      = make1({1, 2, 3});
+  auto v      = mkx::array<float, 1>::array1f({1, 2, 3}, mkx::Shape{});
   auto energy = mkx::multiply(mkx::sum(mkx::square(v)), const1(0.5f, 1));
 
   auto lo     = const1(0.0f, 1);
@@ -107,12 +106,12 @@ TEST_CASE("複合グラフ: CPUフォールバック(cholesky+solve_triangular)�
   float dt                   = 0.1f;
   std::vector<float> v0_data = {0, 0};
 
-  auto m = mkx::reshape<float, 1, 2>(make1(mass), mkx::Shape{2, 2});
+  auto m = mkx::reshape<float, 1, 2>(mkx::array<float, 1>::array1f(mass, mkx::Shape{}), mkx::Shape{2, 2});
   auto l = mkx::cholesky(m);
-  auto f = make1(force);
+  auto f = mkx::array<float, 1>::array1f(force, mkx::Shape{});
   auto a = mkx::solve_triangular(l, f);
 
-  auto v0     = make1(v0_data);
+  auto v0     = mkx::array<float, 1>::array1f(v0_data, mkx::Shape{});
   auto dt_arr = const1(dt, 2);
   auto v_new  = mkx::add(v0, mkx::multiply(a, dt_arr));
 
@@ -154,8 +153,8 @@ TEST_CASE("複合グラフ: 大きめ行列積(8x16*16x8)を行方向で正規�
   for(size_t i = 0; i < a_data.size(); ++i) a_data[i] = static_cast<float>(i % 7) + 1.0f;
   for(size_t i = 0; i < b_data.size(); ++i) b_data[i] = static_cast<float>(i % 5) + 1.0f;
 
-  auto a           = mkx::reshape<float, 1, 2>(make1(a_data), mkx::Shape{M, K});
-  auto b           = mkx::reshape<float, 1, 2>(make1(b_data), mkx::Shape{K, N});
+  auto a           = mkx::reshape<float, 1, 2>(mkx::array<float, 1>::array1f(a_data, mkx::Shape{}), mkx::Shape{M, K});
+  auto b           = mkx::reshape<float, 1, 2>(mkx::array<float, 1>::array1f(b_data, mkx::Shape{}), mkx::Shape{K, N});
   auto c           = mkx::matmul(a, b);
   auto row_sum     = mkx::sum_axis(c, 1);
   auto row_sum_col = mkx::reshape<float, 1, 2>(row_sum, mkx::Shape{M, 1});
@@ -183,13 +182,13 @@ TEST_CASE("複合グラフ: tril+triu-diagの恒等式(10x10)") {
   std::vector<float> m_data(static_cast<size_t>(n * n));
   for(size_t i = 0; i < m_data.size(); ++i) m_data[i] = static_cast<float>(i % 13) - 6.0f;
 
-  auto m  = mkx::reshape<float, 1, 2>(make1(m_data), mkx::Shape{n, n});
+  auto m  = mkx::reshape<float, 1, 2>(mkx::array<float, 1>::array1f(m_data, mkx::Shape{}), mkx::Shape{n, n});
   auto lo = mkx::tril(m);
   auto up = mkx::triu(m);
 
   std::vector<float> diag_vals(static_cast<size_t>(n));
   for(int i = 0; i < n; ++i) diag_vals[static_cast<size_t>(i)] = m_data[static_cast<size_t>(i * n + i)];
-  auto d = mkx::diag(make1(diag_vals));
+  auto d = mkx::diag(mkx::array<float, 1>::array1f(diag_vals, mkx::Shape{}));
 
   auto reconstructed  = mkx::subtract(mkx::add(lo, up), d);
   auto diff           = mkx::subtract(reconstructed, m);
@@ -218,9 +217,9 @@ TEST_CASE("複合グラフ: 大きめCholesky(12x12)+CPUフォールバック出
   std::vector<float> force(static_cast<size_t>(n));
   for(int i = 0; i < n; ++i) force[static_cast<size_t>(i)] = static_cast<float>(i + 1) * 0.5f;
 
-  auto m = mkx::reshape<float, 1, 2>(make1(m_data), mkx::Shape{n, n});
+  auto m = mkx::reshape<float, 1, 2>(mkx::array<float, 1>::array1f(m_data, mkx::Shape{}), mkx::Shape{n, n});
   auto l = mkx::cholesky(m);
-  auto f = make1(force);
+  auto f = mkx::array<float, 1>::array1f(force, mkx::Shape{});
   auto a = mkx::solve_triangular(l, f);
 
   auto damped = mkx::multiply(mkx::sign(a), mkx::power(mkx::abs(a), const1(2.0f, n)));
@@ -244,8 +243,8 @@ TEST_CASE("複合グラフ: バネダンパ力制限積分(clip/negative/multipl
   std::vector<float> v_data = {0.5f, -0.2f, 1.0f, -1.5f};
   float k = 50.0f, c = 4.0f, xlim = 2.0f, force_limit = 60.0f, dt = 0.02f;
 
-  auto x          = make1(x_data);
-  auto v          = make1(v_data);
+  auto x          = mkx::array<float, 1>::array1f(x_data, mkx::Shape{});
+  auto v          = mkx::array<float, 1>::array1f(v_data, mkx::Shape{});
   auto xlim_lo    = const1(-xlim, n);
   auto xlim_hi    = const1(xlim, n);
   auto k_arr      = const1(k, n);
@@ -301,9 +300,9 @@ TEST_CASE("複合グラフ: 回転+ノルム計算+安全正規化(sin/cos/squar
   std::vector<float> x_data     = {1.0f, 2.0f, 0.5f, -1.5f};
   std::vector<float> y_data     = {0.5f, -1.0f, 1.5f, 2.0f};
 
-  auto theta = make1(theta_data);
-  auto x     = make1(x_data);
-  auto y     = make1(y_data);
+  auto theta = mkx::array<float, 1>::array1f(theta_data, mkx::Shape{});
+  auto x     = mkx::array<float, 1>::array1f(x_data, mkx::Shape{});
+  auto y     = mkx::array<float, 1>::array1f(y_data, mkx::Shape{});
   auto zero  = const1(0.0f, n);
   auto maxr  = const1(3.0f, n);
   auto eps   = const1(1e-6f, n);
@@ -348,7 +347,7 @@ TEST_CASE("複合グラフ: 回転+ノルム計算+安全正規化(sin/cos/squar
 TEST_CASE("複合グラフ: argmax/take整合性+比較・論理マスク合成(reduce_max/take/equal/logical_and等13演算)") {
   std::vector<float> values_data = {3.0f, 7.0f, -1.0f, 7.0f, 2.0f, 5.0f};
   const int n                    = static_cast<int>(values_data.size());
-  auto values                    = make1(values_data);
+  auto values                    = mkx::array<float, 1>::array1f(values_data, mkx::Shape{});
   auto thresh1                   = const1(4.0f, n);
   auto thresh2                   = const1(0.0f, n);
 
@@ -390,7 +389,7 @@ TEST_CASE("複合グラフ: A*A^T対称性+slice/concatenate再構築(transpose/
   std::vector<float> a_data(static_cast<size_t>(M * K));
   for(size_t i = 0; i < a_data.size(); ++i) a_data[i] = static_cast<float>(i % 6) - 2.5f;
 
-  auto a            = mkx::reshape<float, 1, 2>(make1(a_data), mkx::Shape{M, K});
+  auto a            = mkx::reshape<float, 1, 2>(mkx::array<float, 1>::array1f(a_data, mkx::Shape{}), mkx::Shape{M, K});
   auto at           = mkx::transpose(a, {1, 0});
   auto c            = mkx::matmul(a, at);
   auto ct           = mkx::transpose(c, {1, 0});
@@ -440,9 +439,9 @@ TEST_CASE("複合グラフ: A*A^T対称性+slice/concatenate再構築(transpose/
 // broadcast+add+mul+whereのfusion結果が非fusion時(eval()は常にfusionするため個別evalで代替比較)と一致し、クラスタに閉じたノードはバッファ未確保のままなことを検証する。
 TEST_CASE("複合グラフ: fusion後もbroadcast+add+mul+where+sqrt+addの結果が正しく、クラスタに閉じたノードはバッファ未確保") {
   auto a    = const1(10.0f, 1);
-  auto b    = make1({1, 2, 3, 4});
-  auto c    = make1({2, 2, 2, 2});
-  auto cond = make1({1, 0, 1, 0});
+  auto b    = mkx::array<float, 1>::array1f({1, 2, 3, 4}, mkx::Shape{});
+  auto c    = mkx::array<float, 1>::array1f({2, 2, 2, 2}, mkx::Shape{});
+  auto cond = mkx::array<float, 1>::array1f({1, 0, 1, 0}, mkx::Shape{});
 
   auto a_bc    = mkx::broadcast_to(a, mkx::Shape{4});
   auto t       = mkx::add(a_bc, b);

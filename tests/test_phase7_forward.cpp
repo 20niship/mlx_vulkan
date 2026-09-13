@@ -11,23 +11,19 @@
 
 using mkx::VulkanBackend;
 
-namespace {
-mkx::array<float, 1> make1(std::vector<float> data) { return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())}); }
-} // namespace
-
 TEST_CASE("forward kernel: 2body(world+hinge子)1関節1アクチュエータで実機dispatchが完走する") {
   const int nb = 2, nv = 1, nq = 1, nu = 1, njnt = 1;
   const float dt = 0.01f;
 
-  auto xipos      = make1({0, 0, 0, 0, 0, 1});
-  auto ximat      = make1({1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1});
-  auto xanchor    = make1({0, 0, 1});
-  auto xaxis      = make1({0, 0, 1});
-  auto xmat       = make1({1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1});
-  auto qpos       = make1({0.3f});
-  auto qvel       = make1({0.5f});
-  auto ctrl       = make1({0.2f});
-  auto act_moment = make1({1.0f});
+  auto xipos      = mkx::array<float, 1>::array1f({0, 0, 0, 0, 0, 1}, mkx::Shape{});
+  auto ximat      = mkx::array<float, 1>::array1f({1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1}, mkx::Shape{});
+  auto xanchor    = mkx::array<float, 1>::array1f({0, 0, 1}, mkx::Shape{});
+  auto xaxis      = mkx::array<float, 1>::array1f({0, 0, 1}, mkx::Shape{});
+  auto xmat       = mkx::array<float, 1>::array1f({1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1}, mkx::Shape{});
+  auto qpos       = mkx::array<float, 1>::array1f({0.3f}, mkx::Shape{});
+  auto qvel       = mkx::array<float, 1>::array1f({0.5f}, mkx::Shape{});
+  auto ctrl       = mkx::array<float, 1>::array1f({0.2f}, mkx::Shape{});
+  auto act_moment = mkx::array<float, 1>::array1f({1.0f}, mkx::Shape{});
 
   auto kernel = mkx::mujoco::make_forward_kernel(nb, nv, nq, nu, njnt, dt, {0.0f, 0.0f, -9.81f},
                                                  /*body_parentid=*/{0, 0}, /*body_rootid=*/{0, 1},

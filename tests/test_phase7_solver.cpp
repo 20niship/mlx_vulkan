@@ -12,7 +12,6 @@
 using mkx::VulkanBackend;
 
 namespace {
-mkx::array<float, 1> make1(std::vector<float> data) { return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())}); }
 
 int64_t scratch_size(int nv) {
   const int max_efc = 256;
@@ -36,16 +35,16 @@ int64_t scratch_size(int nv) {
 
 TEST_CASE("solver kernel: 接触無しなら早期returnでqfrc_constraint=0") {
   const int nb = 2, nv = 1;
-  auto qM             = make1({1.0f});
-  auto qfrc_smooth    = make1({0.0f});
-  auto cdof           = make1({0, 0, 1, 0, 0, 0});
-  auto subtree_com    = make1({0, 0, 0, 0, 0, 1});
-  auto qvel           = make1({0.0f});
-  auto contact_data   = make1(std::vector<float>(128 * 8, 0.0f));
-  auto contact_count  = make1({0.0f});
-  auto pair_props     = make1(std::vector<float>(18, 0.0f));
-  auto body_dof_masks = make1({0.0f, 1.0f});
-  auto body_rootid    = make1({0.0f, 1.0f});
+  auto qM             = mkx::array<float, 1>::array1f({1.0f}, mkx::Shape{});
+  auto qfrc_smooth    = mkx::array<float, 1>::array1f({0.0f}, mkx::Shape{});
+  auto cdof           = mkx::array<float, 1>::array1f({0, 0, 1, 0, 0, 0}, mkx::Shape{});
+  auto subtree_com    = mkx::array<float, 1>::array1f({0, 0, 0, 0, 0, 1}, mkx::Shape{});
+  auto qvel           = mkx::array<float, 1>::array1f({0.0f}, mkx::Shape{});
+  auto contact_data   = mkx::array<float, 1>::array1f(std::vector<float>(128 * 8, 0.0f), mkx::Shape{});
+  auto contact_count  = mkx::array<float, 1>::array1f({0.0f}, mkx::Shape{});
+  auto pair_props     = mkx::array<float, 1>::array1f(std::vector<float>(18, 0.0f), mkx::Shape{});
+  auto body_dof_masks = mkx::array<float, 1>::array1f({0.0f, 1.0f}, mkx::Shape{});
+  auto body_rootid    = mkx::array<float, 1>::array1f({0.0f, 1.0f}, mkx::Shape{});
 
   auto kernel  = mkx::mujoco::make_solver_kernel(nb, nv, 0.01f, /*use_pyramidal=*/false,
                                                  /*refsafe=*/true, /*impratio=*/1.0f,
@@ -61,11 +60,11 @@ TEST_CASE("solver kernel: 接触無しなら早期returnでqfrc_constraint=0") {
 
 TEST_CASE("solver kernel: 1接触(条件数1, 摩擦無し)でNewton+CG解が完走する") {
   const int nb = 2, nv = 1;
-  auto qM          = make1({1.0f});
-  auto qfrc_smooth = make1({0.0f});
-  auto cdof        = make1({0, 0, 1, 0, 0, 0});
-  auto subtree_com = make1({0, 0, 0, 0, 0, 0});
-  auto qvel        = make1({0.0f});
+  auto qM          = mkx::array<float, 1>::array1f({1.0f}, mkx::Shape{});
+  auto qfrc_smooth = mkx::array<float, 1>::array1f({0.0f}, mkx::Shape{});
+  auto cdof        = mkx::array<float, 1>::array1f({0, 0, 1, 0, 0, 0}, mkx::Shape{});
+  auto subtree_com = mkx::array<float, 1>::array1f({0, 0, 0, 0, 0, 0}, mkx::Shape{});
+  auto qvel        = mkx::array<float, 1>::array1f({0.0f}, mkx::Shape{});
 
   // 接触点(1,0,0)・法線(0,1,0): Z軸回転のdofが(1,0,0)を叩くとY方向速度になるのでヤコビアンが非0になる配置
   std::vector<float> cdata(128 * 8, 0.0f);
@@ -77,8 +76,8 @@ TEST_CASE("solver kernel: 1接触(条件数1, 摩擦無し)でNewton+CG解が完
   cdata[5]           = 0;     // normal
   cdata[6]           = -0.1f; // dist(貫入)
   cdata[7]           = 0;     // pair index
-  auto contact_data  = make1(cdata);
-  auto contact_count = make1({1.0f});
+  auto contact_data  = mkx::array<float, 1>::array1f(cdata, mkx::Shape{});
+  auto contact_count = mkx::array<float, 1>::array1f({1.0f}, mkx::Shape{});
 
   std::vector<float> pp(18, 0.0f);
   pp[0]               = 0;
@@ -93,9 +92,9 @@ TEST_CASE("solver kernel: 1接触(条件数1, 摩擦無し)でNewton+CG解が完
   pp[14]              = 0.5f;
   pp[15]              = 2.0f; // solimp
   pp[16]              = 1.0f; // invweight_t
-  auto pair_props     = make1(pp);
-  auto body_dof_masks = make1({0.0f, 1.0f});
-  auto body_rootid    = make1({0.0f, 1.0f});
+  auto pair_props     = mkx::array<float, 1>::array1f(pp, mkx::Shape{});
+  auto body_dof_masks = mkx::array<float, 1>::array1f({0.0f, 1.0f}, mkx::Shape{});
+  auto body_rootid    = mkx::array<float, 1>::array1f({0.0f, 1.0f}, mkx::Shape{});
 
   auto kernel  = mkx::mujoco::make_solver_kernel(nb, nv, 0.01f, /*use_pyramidal=*/false,
                                                  /*refsafe=*/true, /*impratio=*/1.0f,

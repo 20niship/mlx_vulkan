@@ -12,12 +12,8 @@
 
 using mkx::VulkanBackend;
 
-namespace {
-mkx::array<float, 1> make1(std::vector<float> data) { return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())}); }
-} // namespace
-
 TEST_CASE("sum: 全要素の総和") {
-  auto a = make1({1, 2, 3, 4, 5});
+  auto a = mkx::array<float, 1>::array1f({1, 2, 3, 4, 5}, mkx::Shape{});
   auto s = mkx::sum(a);
   mkx::eval(s);
   auto v = s.to_vector();
@@ -28,7 +24,7 @@ TEST_CASE("sum: 全要素の総和") {
 TEST_CASE("sum: 256要素を超えるgrid-strideリダクション") {
   std::vector<float> data(1000);
   for(size_t i = 0; i < data.size(); ++i) data[i] = 1.0f;
-  auto a = make1(data);
+  auto a = mkx::array<float, 1>::array1f(data, mkx::Shape{});
   auto s = mkx::sum(a);
   mkx::eval(s);
   auto v = s.to_vector();
@@ -36,7 +32,7 @@ TEST_CASE("sum: 256要素を超えるgrid-strideリダクション") {
 }
 
 TEST_CASE("reduce_max/argmax/argmin") {
-  auto a = make1({3, 1, 4, 1, 5, 9, 2, 6});
+  auto a = mkx::array<float, 1>::array1f({3, 1, 4, 1, 5, 9, 2, 6}, mkx::Shape{});
 
   auto mx = mkx::reduce_max(a);
   mkx::eval(mx);
@@ -53,7 +49,7 @@ TEST_CASE("reduce_max/argmax/argmin") {
 }
 
 TEST_CASE("sum_axis/reduce_max_axis: 2Dの各軸方向リダクション") {
-  auto flat = make1({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12});
+  auto flat = mkx::array<float, 1>::array1f({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}, mkx::Shape{});
   auto m    = mkx::reshape<float, 1, 2>(flat, mkx::Shape{3, 4});
 
   auto row_sums = mkx::sum_axis(m, 1);
@@ -82,9 +78,9 @@ TEST_CASE("sum_axis/reduce_max_axis: 2Dの各軸方向リダクション") {
 }
 
 TEST_CASE("matmul: 2x3 * 3x2") {
-  auto a1 = make1({1, 2, 3, 4, 5, 6});
+  auto a1 = mkx::array<float, 1>::array1f({1, 2, 3, 4, 5, 6}, mkx::Shape{});
   auto a  = mkx::reshape<float, 1, 2>(a1, mkx::Shape{2, 3});
-  auto b1 = make1({7, 8, 9, 10, 11, 12});
+  auto b1 = mkx::array<float, 1>::array1f({7, 8, 9, 10, 11, 12}, mkx::Shape{});
   auto b  = mkx::reshape<float, 1, 2>(b1, mkx::Shape{3, 2});
 
   auto c = mkx::matmul(a, b);
@@ -100,7 +96,7 @@ TEST_CASE("matmul: 2x3 * 3x2") {
 
 TEST_CASE("cholesky + solve_triangular") {
   // A = [[4,2],[2,3]] (対称正定値) -> L=[[2,0],[1, sqrt(2)]]
-  auto a1 = make1({4, 2, 2, 3});
+  auto a1 = mkx::array<float, 1>::array1f({4, 2, 2, 3}, mkx::Shape{});
   auto a  = mkx::reshape<float, 1, 2>(a1, mkx::Shape{2, 2});
 
   auto l = mkx::cholesky(a);
@@ -111,7 +107,7 @@ TEST_CASE("cholesky + solve_triangular") {
   CHECK(lv[2] == doctest::Approx(1.0f));
   CHECK(lv[3] == doctest::Approx(std::sqrt(2.0f)));
 
-  auto b = make1({4, 3});
+  auto b = mkx::array<float, 1>::array1f({4, 3}, mkx::Shape{});
   auto x = mkx::solve_triangular(l, b);
   mkx::eval(x);
   auto xv = x.to_vector();
@@ -121,8 +117,8 @@ TEST_CASE("cholesky + solve_triangular") {
 }
 
 TEST_CASE("cross: 3要素ベクトルの外積") {
-  auto a = make1({1, 0, 0});
-  auto b = make1({0, 1, 0});
+  auto a = mkx::array<float, 1>::array1f({1, 0, 0}, mkx::Shape{});
+  auto b = mkx::array<float, 1>::array1f({0, 1, 0}, mkx::Shape{});
   auto c = mkx::cross(a, b);
   mkx::eval(c);
   auto v = c.to_vector();

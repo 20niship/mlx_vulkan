@@ -10,13 +10,9 @@
 
 using mkx::VulkanBackend;
 
-namespace {
-mkx::array<float, 1> make(std::vector<float> data) { return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())}); }
-} // namespace
-
 TEST_CASE("add/sub/mul/divはCPU計算と一致する") {
-  auto a = make({1.0f, 2.0f, 3.0f});
-  auto b = make({4.0f, 5.0f, 6.0f});
+  auto a = mkx::array<float, 1>::array1f({1.0f, 2.0f, 3.0f}, mkx::Shape{});
+  auto b = mkx::array<float, 1>::array1f({4.0f, 5.0f, 6.0f}, mkx::Shape{});
 
   auto add_r = mkx::add(a, b);
   mkx::eval(add_r);
@@ -42,7 +38,7 @@ TEST_CASE("add/sub/mul/divはCPU計算と一致する") {
 }
 
 TEST_CASE("sqrt/absなど単項演算") {
-  auto a = make({4.0f, -9.0f, 16.0f});
+  auto a = mkx::array<float, 1>::array1f({4.0f, -9.0f, 16.0f}, mkx::Shape{});
 
   auto s = mkx::sqrt(a);
   mkx::eval(s);
@@ -57,8 +53,8 @@ TEST_CASE("sqrt/absなど単項演算") {
 }
 
 TEST_CASE("比較・論理演算は0/1を返す") {
-  auto a = make({1.0f, 2.0f, 3.0f});
-  auto b = make({3.0f, 2.0f, 1.0f});
+  auto a = mkx::array<float, 1>::array1f({1.0f, 2.0f, 3.0f}, mkx::Shape{});
+  auto b = mkx::array<float, 1>::array1f({3.0f, 2.0f, 1.0f}, mkx::Shape{});
 
   auto gt = mkx::greater(a, b);
   mkx::eval(gt);
@@ -74,9 +70,9 @@ TEST_CASE("比較・論理演算は0/1を返す") {
 }
 
 TEST_CASE("where/clip") {
-  auto cond = make({1.0f, 0.0f, 1.0f});
-  auto x    = make({10.0f, 20.0f, 30.0f});
-  auto y    = make({-1.0f, -2.0f, -3.0f});
+  auto cond = mkx::array<float, 1>::array1f({1.0f, 0.0f, 1.0f}, mkx::Shape{});
+  auto x    = mkx::array<float, 1>::array1f({10.0f, 20.0f, 30.0f}, mkx::Shape{});
+  auto y    = mkx::array<float, 1>::array1f({-1.0f, -2.0f, -3.0f}, mkx::Shape{});
 
   auto w = mkx::where(cond, x, y);
   mkx::eval(w);
@@ -85,8 +81,8 @@ TEST_CASE("where/clip") {
   CHECK(v[1] == doctest::Approx(-2.0f));
   CHECK(v[2] == doctest::Approx(30.0f));
 
-  auto lo = make({0.0f, 0.0f, 0.0f});
-  auto hi = make({5.0f, 5.0f, 5.0f});
+  auto lo = mkx::array<float, 1>::array1f({0.0f, 0.0f, 0.0f}, mkx::Shape{});
+  auto hi = mkx::array<float, 1>::array1f({5.0f, 5.0f, 5.0f}, mkx::Shape{});
   auto c  = mkx::clip(x, lo, hi);
   mkx::eval(c);
   v = c.to_vector();

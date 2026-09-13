@@ -11,10 +11,6 @@
 
 using mkx::VulkanBackend;
 
-namespace {
-mkx::array<float, 1> make1(std::vector<float> data) { return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())}); }
-} // namespace
-
 TEST_CASE("compute_kernel: 2入力2出力のカスタムカーネル基盤の疎通確認") {
   auto kernel = mkx::fast::compute_kernel("add_sub_kernel", {"a", "b"}, {"sum_out", "diff_out"},
                                           R"GLSL(
@@ -24,8 +20,8 @@ TEST_CASE("compute_kernel: 2入力2出力のカスタムカーネル基盤の疎
         diff_out[i] = a[i] - b[i];
         )GLSL");
 
-  auto a = make1({1, 2, 3, 4});
-  auto b = make1({10, 20, 30, 40});
+  auto a = mkx::array<float, 1>::array1f({1, 2, 3, 4}, mkx::Shape{});
+  auto b = mkx::array<float, 1>::array1f({10, 20, 30, 40}, mkx::Shape{});
 
   auto outputs = kernel({a, b}, {mkx::Shape{4}, mkx::Shape{4}}, {4, 1, 1}, {4, 1, 1});
   REQUIRE(outputs.size() == 2);
@@ -54,7 +50,7 @@ TEST_CASE("compute_kernel: is_permanentな出力ノードは2回のdispatchで�
   const void* owner = &owner_token;
   uint64_t loc_id   = mkx::persistent_location_hash(__FILE__, __LINE__);
 
-  auto a1   = make1({1, 2, 3, 4});
+  auto a1   = mkx::array<float, 1>::array1f({1, 2, 3, 4}, mkx::Shape{});
   auto out1 = kernel({a1}, {mkx::Shape{4}}, {4, 1, 1}, {4, 1, 1});
   mkx::mark_permanent<VulkanBackend>(out1[0].node(), loc_id, owner);
   mkx::eval(out1[0]);
@@ -63,7 +59,7 @@ TEST_CASE("compute_kernel: is_permanentな出力ノードは2回のdispatchで�
   CHECK(v1[3] == doctest::Approx(8.0f));
   auto* buf1 = mkx::buffer_for<VulkanBackend>(out1[0].node());
 
-  auto a2   = make1({5, 6, 7, 8});
+  auto a2   = mkx::array<float, 1>::array1f({5, 6, 7, 8}, mkx::Shape{});
   auto out2 = kernel({a2}, {mkx::Shape{4}}, {4, 1, 1}, {4, 1, 1});
   mkx::mark_permanent<VulkanBackend>(out2[0].node(), loc_id, owner);
   mkx::eval(out2[0]);

@@ -10,12 +10,8 @@
 
 using mkx::VulkanBackend;
 
-namespace {
-mkx::array<float, 1> make1(std::vector<float> data) { return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())}); }
-} // namespace
-
 TEST_CASE("reshape/flatten: viewなのでgpu_bufferを共有する") {
-  auto a = make1({1, 2, 3, 4, 5, 6});
+  auto a = mkx::array<float, 1>::array1f({1, 2, 3, 4, 5, 6}, mkx::Shape{});
   auto m = mkx::reshape(a, mkx::Shape{2, 3});
   mkx::eval(m);
   CHECK(mkx::buffer_for<VulkanBackend>(m.node()) == mkx::buffer_for<VulkanBackend>(a.node()));
@@ -24,7 +20,7 @@ TEST_CASE("reshape/flatten: viewなのでgpu_bufferを共有する") {
 }
 
 TEST_CASE("transpose: 2x3行列を3x2に転置") {
-  auto a = make1({1, 2, 3, 4, 5, 6});
+  auto a = mkx::array<float, 1>::array1f({1, 2, 3, 4, 5, 6}, mkx::Shape{});
   auto m = mkx::reshape(a, mkx::Shape{2, 3});
   auto t = mkx::transpose(m, {1, 0});
   mkx::eval(t);
@@ -35,7 +31,7 @@ TEST_CASE("transpose: 2x3行列を3x2に転置") {
 }
 
 TEST_CASE("broadcast_to: 先頭次元を複製") {
-  auto a = make1({1, 2, 3});
+  auto a = mkx::array<float, 1>::array1f({1, 2, 3}, mkx::Shape{});
   auto b = mkx::broadcast_to(a, mkx::Shape{2, 3});
   mkx::eval(b);
   auto v                      = b.to_vector();
@@ -44,7 +40,7 @@ TEST_CASE("broadcast_to: 先頭次元を複製") {
 }
 
 TEST_CASE("tile: 2回繰り返す") {
-  auto a = make1({1, 2, 3});
+  auto a = mkx::array<float, 1>::array1f({1, 2, 3}, mkx::Shape{});
   auto t = mkx::tile(a, {2});
   mkx::eval(t);
   auto v                      = t.to_vector();
@@ -53,7 +49,7 @@ TEST_CASE("tile: 2回繰り返す") {
 }
 
 TEST_CASE("slice: 部分区間を取り出す") {
-  auto a = make1({10, 20, 30, 40, 50});
+  auto a = mkx::array<float, 1>::array1f({10, 20, 30, 40, 50}, mkx::Shape{});
   auto s = mkx::slice(a, {1}, {4});
   mkx::eval(s);
   auto v = s.to_vector();
@@ -64,8 +60,8 @@ TEST_CASE("slice: 部分区間を取り出す") {
 }
 
 TEST_CASE("concatenate: axis0で連結") {
-  auto a = make1({1, 2, 3});
-  auto b = make1({4, 5});
+  auto a = mkx::array<float, 1>::array1f({1, 2, 3}, mkx::Shape{});
+  auto b = mkx::array<float, 1>::array1f({4, 5}, mkx::Shape{});
   auto c = mkx::concatenate(a, b, 0);
   mkx::eval(c);
   auto v = c.to_vector();
@@ -75,8 +71,8 @@ TEST_CASE("concatenate: axis0で連結") {
 }
 
 TEST_CASE("stack: 新しい軸で積み重ねる") {
-  auto a = make1({1, 2, 3});
-  auto b = make1({4, 5, 6});
+  auto a = mkx::array<float, 1>::array1f({1, 2, 3}, mkx::Shape{});
+  auto b = mkx::array<float, 1>::array1f({4, 5, 6}, mkx::Shape{});
   auto s = mkx::stack<float, 2>(a, b, 0);
   mkx::eval(s);
   auto v = s.to_vector();
@@ -86,8 +82,8 @@ TEST_CASE("stack: 新しい軸で積み重ねる") {
 }
 
 TEST_CASE("take: indexでgatherする") {
-  auto data = make1({10, 20, 30, 40});
-  auto idx  = make1({2, 0, 3});
+  auto data = mkx::array<float, 1>::array1f({10, 20, 30, 40}, mkx::Shape{});
+  auto idx  = mkx::array<float, 1>::array1f({2, 0, 3}, mkx::Shape{});
   auto t    = mkx::take(data, idx, 0);
   mkx::eval(t);
   auto v = t.to_vector();
@@ -98,7 +94,7 @@ TEST_CASE("take: indexでgatherする") {
 }
 
 TEST_CASE("diag: ベクトルから対角行列") {
-  auto v = make1({1, 2, 3});
+  auto v = mkx::array<float, 1>::array1f({1, 2, 3}, mkx::Shape{});
   auto d = mkx::diag(v);
   mkx::eval(d);
   auto out = d.to_vector();
@@ -112,7 +108,7 @@ TEST_CASE("diag: ベクトルから対角行列") {
 }
 
 TEST_CASE("tril/triu: 三角行列マスク") {
-  auto v = make1({1, 2, 3, 4, 5, 6, 7, 8, 9});
+  auto v = mkx::array<float, 1>::array1f({1, 2, 3, 4, 5, 6, 7, 8, 9}, mkx::Shape{});
   auto m = mkx::reshape<float, 1, 2>(v, mkx::Shape{3, 3});
 
   auto lo = mkx::tril(m);
@@ -129,7 +125,7 @@ TEST_CASE("tril/triu: 三角行列マスク") {
 }
 
 TEST_CASE("copy: 値をそのまま複製する") {
-  auto a = make1({7, 8, 9});
+  auto a = mkx::array<float, 1>::array1f({7, 8, 9}, mkx::Shape{});
   auto c = mkx::copy(a);
   mkx::eval(c);
   auto v = c.to_vector();
