@@ -60,6 +60,7 @@ add_executable(mkx_tests
     tests/test_phase7_collision.cpp
     tests/test_phase7_solver.cpp
     tests/test_graph_composite.cpp
+    tests/test_fuse.cpp
 )
 target_include_directories(mkx_tests PRIVATE tests)
 target_link_libraries(mkx_tests PRIVATE mkx doctest::doctest)
