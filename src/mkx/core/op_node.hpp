@@ -182,6 +182,8 @@ struct OpNode {
   std::vector<Dtype> custom_output_dtypes;
   std::array<uint32_t, 3> custom_groups{1, 1, 1};
   std::vector<void*> multi_outputs;
+  // 指定スロットのみBackend::allocをスキップしこのポインタを使う(呼び出し側が別途保持・解放する永続バッファ用)。既定は空=全出力alloc。
+  std::vector<void*> preallocated_outputs;
 
   // Phase7 CustomKernelOutput(別名ノード)専用: 所有者のmulti_outputsのindex
   int output_index = -1;

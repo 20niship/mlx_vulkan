@@ -75,12 +75,16 @@ template <ComputeBackend Backend> void eval_node(OpNode& node, std::unordered_ma
       bufs.push_back(static_cast<typename Backend::Buffer*>(in->gpu_buffer));
     }
     for(size_t k = 0; k < node.custom_output_shapes.size(); ++k) {
-      auto* out = Backend::alloc(static_cast<size_t>(shape_size(node.custom_output_shapes[k])) * dtype_size(node.custom_output_dtypes[k]));
+      bool preallocated = k < node.preallocated_outputs.size() && node.preallocated_outputs[k] != nullptr;
+      auto* out          = preallocated ? static_cast<typename Backend::Buffer*>(node.preallocated_outputs[k]) : Backend::alloc(static_cast<size_t>(shape_size(node.custom_output_shapes[k])) * dtype_size(node.custom_output_dtypes[k]));
       bufs.push_back(out);
       node.multi_outputs.push_back(out);
     }
     node.free_gpu_buffer = [&node]() {
-      for(void* p : node.multi_outputs) Backend::free(static_cast<typename Backend::Buffer*>(p));
+      for(size_t k = 0; k < node.multi_outputs.size(); ++k) {
+        if(k < node.preallocated_outputs.size() && node.preallocated_outputs[k] != nullptr) continue; // 永続バッファは呼び出し側が解放する
+        Backend::free(static_cast<typename Backend::Buffer*>(node.multi_outputs[k]));
+      }
     };
 
     size_t hash = std::hash<std::string>{}(node.custom_source);

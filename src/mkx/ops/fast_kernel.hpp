@@ -36,11 +36,12 @@ struct Kernel {
     return src;
   }
 
-  std::vector<array<float, 1>> operator()(const std::vector<array<float, 1>>& inputs, const std::vector<Shape>& output_shapes, std::array<uint32_t, 3> grid, std::array<uint32_t, 3> threadgroup) const {
+  std::vector<array<float, 1>> operator()(const std::vector<array<float, 1>>& inputs, const std::vector<Shape>& output_shapes, std::array<uint32_t, 3> grid, std::array<uint32_t, 3> threadgroup, const std::vector<void*>& preallocated_outputs = {}) const {
     auto owner  = std::make_shared<OpNode>();
     owner->type = OpType::CustomKernel;
     for(auto& in : inputs) owner->inputs.push_back(in.node());
-    owner->custom_output_shapes = output_shapes;
+    owner->custom_output_shapes  = output_shapes;
+    owner->preallocated_outputs  = preallocated_outputs;
     owner->custom_output_dtypes.assign(output_shapes.size(), Dtype::Float32);
     owner->custom_groups = {
       (grid[0] + threadgroup[0] - 1) / threadgroup[0],
