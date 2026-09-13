@@ -13,11 +13,7 @@ using mkx::VulkanBackend;
 
 namespace {
 mkx::array<float, 1> make1(std::vector<float> data) {
-  auto a = mkx::zeros<float, 1>({static_cast<int64_t>(data.size())});
-  mkx::eval<VulkanBackend>(a);
-  auto* buf = static_cast<VulkanBackend::Buffer*>(a.node()->gpu_buffer);
-  VulkanBackend::upload(buf, data.data(), data.size() * sizeof(float));
-  return a;
+  return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())});
 }
 } // namespace
 
@@ -50,15 +46,15 @@ TEST_CASE("forward kernel: 2body(world+hinge子)1関節1アクチュエータで
   auto outputs = kernel({xipos, ximat, xanchor, xaxis, xmat, qpos, qvel, ctrl, act_moment}, {mkx::Shape{nv * nv}, mkx::Shape{nv}, mkx::Shape{nb * 3}, mkx::Shape{nb * 10}, mkx::Shape{nb * 6}, mkx::Shape{nv}, mkx::Shape{scratch_sz}, mkx::Shape{nv * 6}}, {1, 1, 1}, {1, 1, 1});
   REQUIRE(outputs.size() == 8);
 
-  mkx::eval<VulkanBackend>(outputs[0], outputs[1], outputs[2], outputs[3], outputs[4], outputs[5], outputs[6], outputs[7]);
+  mkx::eval(outputs[0], outputs[1], outputs[2], outputs[3], outputs[4], outputs[5], outputs[6], outputs[7]);
 
-  auto qM            = outputs[0].to_vector<VulkanBackend>();
-  auto qfrc_smooth   = outputs[1].to_vector<VulkanBackend>();
-  auto subtree_com   = outputs[2].to_vector<VulkanBackend>();
-  auto cinert        = outputs[3].to_vector<VulkanBackend>();
-  auto cvel          = outputs[4].to_vector<VulkanBackend>();
-  auto qfrc_actuator = outputs[5].to_vector<VulkanBackend>();
-  auto cdof          = outputs[7].to_vector<VulkanBackend>();
+  auto qM            = outputs[0].to_vector();
+  auto qfrc_smooth   = outputs[1].to_vector();
+  auto subtree_com   = outputs[2].to_vector();
+  auto cinert        = outputs[3].to_vector();
+  auto cvel          = outputs[4].to_vector();
+  auto qfrc_actuator = outputs[5].to_vector();
+  auto cdof          = outputs[7].to_vector();
 
   REQUIRE(qM.size() == 1);
   REQUIRE(qfrc_smooth.size() == 1);

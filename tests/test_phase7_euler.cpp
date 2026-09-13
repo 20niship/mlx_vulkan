@@ -13,11 +13,7 @@ using mkx::VulkanBackend;
 
 namespace {
 mkx::array<float, 1> make1(std::vector<float> data) {
-  auto a = mkx::zeros<float, 1>({static_cast<int64_t>(data.size())});
-  mkx::eval<VulkanBackend>(a);
-  auto* buf = static_cast<VulkanBackend::Buffer*>(a.node()->gpu_buffer);
-  VulkanBackend::upload(buf, data.data(), data.size() * sizeof(float));
-  return a;
+  return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())});
 }
 } // namespace
 
@@ -39,10 +35,10 @@ TEST_CASE("euler kernel: nv=1の単純joint1本で半陰的Euler積分を1ステ
   auto outputs = kernel({qM, qfrc_smooth, qfrc_constraint, qvel_in, qpos_in}, {mkx::Shape{1}, mkx::Shape{1}, mkx::Shape{1}}, {1, 1, 1}, {1, 1, 1});
   REQUIRE(outputs.size() == 3);
 
-  mkx::eval<VulkanBackend>(outputs[0], outputs[1], outputs[2]);
-  auto qpos_out = outputs[0].to_vector<VulkanBackend>();
-  auto qvel_out = outputs[1].to_vector<VulkanBackend>();
-  auto qacc_out = outputs[2].to_vector<VulkanBackend>();
+  mkx::eval(outputs[0], outputs[1], outputs[2]);
+  auto qpos_out = outputs[0].to_vector();
+  auto qvel_out = outputs[1].to_vector();
+  auto qacc_out = outputs[2].to_vector();
 
   REQUIRE(qpos_out.size() == 1);
   REQUIRE(qvel_out.size() == 1);

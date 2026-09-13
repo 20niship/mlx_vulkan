@@ -14,11 +14,7 @@ using mkx::VulkanBackend;
 
 namespace {
 mkx::array<float, 1> make1(std::vector<float> data) {
-  auto a = mkx::zeros<float, 1>({static_cast<int64_t>(data.size())});
-  mkx::eval<VulkanBackend>(a);
-  auto* buf = static_cast<VulkanBackend::Buffer*>(a.node()->gpu_buffer);
-  VulkanBackend::upload(buf, data.data(), data.size() * sizeof(float));
-  return a;
+  return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())});
 }
 } // namespace
 
@@ -31,8 +27,8 @@ TEST_CASE("vmap: バッチ軸0で各環境ごとにsquareを適用する") {
   auto vsquare   = mkx::vmap<float, 2>(square_fn, 0, 0);
 
   auto out = vsquare(batched);
-  mkx::eval<VulkanBackend>(out);
-  auto v = out.to_vector<VulkanBackend>();
+  mkx::eval(out);
+  auto v = out.to_vector();
   REQUIRE(v.size() == 6);
   std::vector<float> expected = {1, 4, 9, 16, 25, 36};
   for(int i = 0; i < 6; ++i) CHECK(v[i] == doctest::Approx(expected[i]));
@@ -47,8 +43,8 @@ TEST_CASE("vmap: shape非依存な関数はfast pathで1 dispatch(host loop無�
   auto vsquare        = mkx::vmap<float, 2>(generic_square, 0, 0);
 
   auto out = vsquare(batched);
-  mkx::eval<VulkanBackend>(out);
-  auto v = out.to_vector<VulkanBackend>();
+  mkx::eval(out);
+  auto v = out.to_vector();
   REQUIRE(v.size() == 6);
   std::vector<float> expected = {1, 4, 9, 16, 25, 36};
   for(int i = 0; i < 6; ++i) CHECK(v[i] == doctest::Approx(expected[i]));
@@ -61,8 +57,8 @@ TEST_CASE("compile: passthroughなので通常のeval結果と一致する") {
   auto compiled = mkx::compile(add_fn);
 
   auto out = compiled(a, b);
-  mkx::eval<VulkanBackend>(out);
-  auto v = out.to_vector<VulkanBackend>();
+  mkx::eval(out);
+  auto v = out.to_vector();
   CHECK(v[0] == doctest::Approx(5.0f));
   CHECK(v[1] == doctest::Approx(7.0f));
   CHECK(v[2] == doctest::Approx(9.0f));

@@ -13,11 +13,7 @@ using mkx::VulkanBackend;
 
 namespace {
 mkx::array<float, 1> make1(std::vector<float> data) {
-  auto a = mkx::zeros<float, 1>({static_cast<int64_t>(data.size())});
-  mkx::eval<VulkanBackend>(a);
-  auto* buf = static_cast<VulkanBackend::Buffer*>(a.node()->gpu_buffer);
-  VulkanBackend::upload(buf, data.data(), data.size() * sizeof(float));
-  return a;
+  return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())});
 }
 } // namespace
 
@@ -39,9 +35,9 @@ TEST_CASE("collision kernel: plane-meshで1つの接触点を検出する") {
   auto outputs = kernel({geom_xpos, geom_xmat, mesh_verts, pair_data, mesh_vertadr, mesh_vertnum, geom_dataid}, {mkx::Shape{128 * 8}, mkx::Shape{1}}, {1, 1, 1}, {1, 1, 1});
   REQUIRE(outputs.size() == 2);
 
-  mkx::eval<VulkanBackend>(outputs[0], outputs[1]);
-  auto contact_data  = outputs[0].to_vector<VulkanBackend>();
-  auto contact_count = outputs[1].to_vector<VulkanBackend>();
+  mkx::eval(outputs[0], outputs[1]);
+  auto contact_data  = outputs[0].to_vector();
+  auto contact_count = outputs[1].to_vector();
 
   REQUIRE(contact_count.size() == 1);
   CHECK(contact_count[0] == doctest::Approx(1.0f));

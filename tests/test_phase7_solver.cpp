@@ -13,11 +13,7 @@ using mkx::VulkanBackend;
 
 namespace {
 mkx::array<float, 1> make1(std::vector<float> data) {
-  auto a = mkx::zeros<float, 1>({static_cast<int64_t>(data.size())});
-  mkx::eval<VulkanBackend>(a);
-  auto* buf = static_cast<VulkanBackend::Buffer*>(a.node()->gpu_buffer);
-  VulkanBackend::upload(buf, data.data(), data.size() * sizeof(float));
-  return a;
+  return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())});
 }
 
 int64_t scratch_size(int nv) {
@@ -59,8 +55,8 @@ TEST_CASE("solver kernel: 接触無しなら早期returnでqfrc_constraint=0") {
   auto outputs = kernel({qM, qfrc_smooth, cdof, subtree_com, qvel, contact_data, contact_count, pair_props, body_dof_masks, body_rootid}, {mkx::Shape{nv}, mkx::Shape{scratch_size(nv)}}, {static_cast<uint32_t>(nv), 1, 1}, {static_cast<uint32_t>(nv), 1, 1});
   REQUIRE(outputs.size() == 2);
 
-  mkx::eval<VulkanBackend>(outputs[0]);
-  auto qfrc_constraint = outputs[0].to_vector<VulkanBackend>();
+  mkx::eval(outputs[0]);
+  auto qfrc_constraint = outputs[0].to_vector();
   REQUIRE(qfrc_constraint.size() == 1);
   CHECK(qfrc_constraint[0] == doctest::Approx(0.0f));
 }
@@ -108,9 +104,9 @@ TEST_CASE("solver kernel: 1接触(条件数1, 摩擦無し)でNewton+CG解が完
                                                  /*solver_iters=*/1, /*cg_iters=*/15);
   auto outputs = kernel({qM, qfrc_smooth, cdof, subtree_com, qvel, contact_data, contact_count, pair_props, body_dof_masks, body_rootid}, {mkx::Shape{nv}, mkx::Shape{scratch_size(nv)}}, {static_cast<uint32_t>(nv), 1, 1}, {static_cast<uint32_t>(nv), 1, 1});
 
-  mkx::eval<VulkanBackend>(outputs[0], outputs[1]);
-  auto qfrc_constraint = outputs[0].to_vector<VulkanBackend>();
-  auto scratch         = outputs[1].to_vector<VulkanBackend>();
+  mkx::eval(outputs[0], outputs[1]);
+  auto qfrc_constraint = outputs[0].to_vector();
+  auto scratch         = outputs[1].to_vector();
 
   REQUIRE(qfrc_constraint.size() == 1);
   CHECK(std::isfinite(qfrc_constraint[0]));

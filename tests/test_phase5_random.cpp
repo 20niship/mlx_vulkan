@@ -15,9 +15,9 @@ TEST_CASE("random::normal: 同じseedなら同じ結果を再現する") {
   auto a = mkx::random::normal<float, 1>(k, {2000});
   auto b = mkx::random::normal<float, 1>(mkx::random::key(42), {2000});
 
-  mkx::eval<VulkanBackend>(a, b);
-  auto va = a.to_vector<VulkanBackend>();
-  auto vb = b.to_vector<VulkanBackend>();
+  mkx::eval(a, b);
+  auto va = a.to_vector();
+  auto vb = b.to_vector();
 
   REQUIRE(va.size() == 2000);
   for(size_t i = 0; i < va.size(); ++i) CHECK(va[i] == doctest::Approx(vb[i]));
@@ -26,9 +26,9 @@ TEST_CASE("random::normal: 同じseedなら同じ結果を再現する") {
 TEST_CASE("random::normal: 異なるseedなら異なる結果になる") {
   auto a = mkx::random::normal<float, 1>(mkx::random::key(1), {100});
   auto b = mkx::random::normal<float, 1>(mkx::random::key(2), {100});
-  mkx::eval<VulkanBackend>(a, b);
-  auto va = a.to_vector<VulkanBackend>();
-  auto vb = b.to_vector<VulkanBackend>();
+  mkx::eval(a, b);
+  auto va = a.to_vector();
+  auto vb = b.to_vector();
 
   int diff_count = 0;
   for(size_t i = 0; i < va.size(); ++i) {
@@ -39,8 +39,8 @@ TEST_CASE("random::normal: 異なるseedなら異なる結果になる") {
 
 TEST_CASE("random::normal: 標準正規分布に近い平均・分散になる") {
   auto a = mkx::random::normal<float, 1>(mkx::random::key(7), {4000});
-  mkx::eval<VulkanBackend>(a);
-  auto v = a.to_vector<VulkanBackend>();
+  mkx::eval(a);
+  auto v = a.to_vector();
 
   double mean = 0.0;
   for(float x : v) mean += x;
