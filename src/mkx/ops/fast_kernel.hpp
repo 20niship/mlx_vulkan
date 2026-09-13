@@ -63,6 +63,8 @@ template <ComputeBackend Backend = VulkanBackend> struct Kernel {
   }
 };
 
-template <ComputeBackend Backend = VulkanBackend> Kernel<Backend> compute_kernel(std::string name, std::vector<std::string> input_names, std::vector<std::string> output_names, std::string source, std::string header = "") { return Kernel<Backend>{std::move(name), std::move(input_names), std::move(output_names), std::move(source), std::move(header)}; }
+template <ComputeBackend Backend = VulkanBackend> Kernel<Backend> compute_kernel(std::string name, std::vector<std::string> input_names, std::vector<std::string> output_names, std::string source, std::string header = "") {
+  return Kernel<Backend>{std::move(name), std::move(input_names), std::move(output_names), std::move(source), std::move(header)};
+}
 
 } // namespace mkx::fast

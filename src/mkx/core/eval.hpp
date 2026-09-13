@@ -146,7 +146,7 @@ template <class Backend> FusionPlan<Backend> build_fusion_plan(const std::vector
       continue;
     }
     OpNode<Backend>* p0 = n->inputs.empty() ? nullptr : n->inputs[0].get();
-    auto it              = p0 ? cluster_of.find(p0) : cluster_of.end();
+    auto it             = p0 ? cluster_of.find(p0) : cluster_of.end();
     if(p0 && it != cluster_of.end()) {
       clusters[it->second].push_back(np);
       cluster_of[n] = it->second;
@@ -160,10 +160,10 @@ template <class Backend> FusionPlan<Backend> build_fusion_plan(const std::vector
   std::unordered_set<OpNode<Backend>*> materialized;
   for(auto& np : order) {
     OpNode<Backend>* n = np.get();
-    auto nit            = cluster_of.find(n);
+    auto nit           = cluster_of.find(n);
     for(auto& in : n->inputs) {
       OpNode<Backend>* b = in.get();
-      auto bit             = cluster_of.find(b);
+      auto bit           = cluster_of.find(b);
       if(bit == cluster_of.end()) continue;
       bool same = (nit != cluster_of.end()) && (nit->second == bit->second);
       if(!same) materialized.insert(b);
@@ -199,10 +199,10 @@ template <class Backend> FusionPlan<Backend> build_fusion_plan(const std::vector
   }
   for(auto& np : order) {
     OpNode<Backend>* n = np.get();
-    size_t cu           = unit_of.at(n);
+    size_t cu          = unit_of.at(n);
     for(auto& in : n->inputs) {
       OpNode<Backend>* p = in.get();
-      auto pit             = unit_of.find(p);
+      auto pit           = unit_of.find(p);
       if(pit == unit_of.end()) continue; // 既に評価済みでtopo_sort対象外(モデル定数等)
       size_t pu = pit->second;
       if(pu == cu) continue;
@@ -237,8 +237,7 @@ template <class Backend> FusionPlan<Backend> build_fusion_plan(const std::vector
   return FusionPlan<Backend>{std::move(sorted_units), std::move(materialized)};
 }
 
-template <class Backend>
-void eval_fused_cluster(const std::vector<NodePtr<Backend>>& members, std::unordered_map<size_t, typename Backend::Pipeline>& cache, const std::unordered_set<OpNode<Backend>*>& materialized) {
+template <class Backend> void eval_fused_cluster(const std::vector<NodePtr<Backend>>& members, std::unordered_map<size_t, typename Backend::Pipeline>& cache, const std::unordered_set<OpNode<Backend>*>& materialized) {
   std::unordered_map<OpNode<Backend>*, size_t> local_idx;
   for(size_t i = 0; i < members.size(); i++) local_idx[members[i].get()] = i;
 
@@ -284,11 +283,11 @@ void eval_fused_cluster(const std::vector<NodePtr<Backend>>& members, std::unord
 
   for(size_t idx = 0; idx < members.size(); idx++) {
     OpNode<Backend>* n = members[idx].get();
-    std::string vname    = "v" + std::to_string(idx);
+    std::string vname  = "v" + std::to_string(idx);
     if(shader_group_for(n->type) == ShaderGroup::Gather) {
-      Push pc              = build_push(*n);
+      Push pc             = build_push(*n);
       std::string extname = "in" + std::to_string(ext_idx.at(n->inputs[0].get()));
-      std::string sfx      = std::to_string(idx);
+      std::string sfx     = std::to_string(idx);
       src += "  float " + vname + ";\n  {\n";
       src += "    uint out_shape_" + sfx + "[4] = uint[4](" + std::to_string(pc.out_shape[0]) + "u," + std::to_string(pc.out_shape[1]) + "u," + std::to_string(pc.out_shape[2]) + "u," + std::to_string(pc.out_shape[3]) + "u);\n";
       src += "    uint in_shape_" + sfx + "[4] = uint[4](" + std::to_string(pc.in_shape[0]) + "u," + std::to_string(pc.in_shape[1]) + "u," + std::to_string(pc.in_shape[2]) + "u," + std::to_string(pc.in_shape[3]) + "u);\n";
@@ -312,7 +311,7 @@ void eval_fused_cluster(const std::vector<NodePtr<Backend>>& members, std::unord
   src += "}\n";
 
   size_t hash = std::hash<std::string>{}(src);
-  auto pit     = cache.find(hash);
+  auto pit    = cache.find(hash);
   if(pit == cache.end()) pit = cache.emplace(hash, Backend::compile(src, hash)).first;
 
   std::vector<typename Backend::Buffer*> bufs;
@@ -361,11 +360,11 @@ template <class Backend> void eval_node(OpNode<Backend>& node, std::unordered_ma
 
     std::vector<typename Backend::Buffer*> fallback_bufs; // 別名ノードが既に破棄されている場合の一時バッファ(dispatch後すぐ解放)
     for(size_t k = 0; k < node.custom_output_shapes.size(); ++k) {
-      size_t nbytes         = static_cast<size_t>(shape_size(node.custom_output_shapes[k])) * dtype_size(node.custom_output_dtypes[k]);
-      auto alias             = (k < node.output_aliases.size()) ? node.output_aliases[k].lock() : nullptr;
+      size_t nbytes = static_cast<size_t>(shape_size(node.custom_output_shapes[k])) * dtype_size(node.custom_output_dtypes[k]);
+      auto alias    = (k < node.output_aliases.size()) ? node.output_aliases[k].lock() : nullptr;
       typename Backend::Buffer* out;
       if(alias) {
-        out             = Backend::get_or_allocate(alias.get(), nbytes);
+        out              = Backend::get_or_allocate(alias.get(), nbytes);
         alias->evaluated = true;
       } else {
         out = Backend::alloc(nbytes);

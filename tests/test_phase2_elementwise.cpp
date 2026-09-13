@@ -11,9 +11,7 @@
 using mkx::VulkanBackend;
 
 namespace {
-mkx::array<float, 1> make(std::vector<float> data) {
-  return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())});
-}
+mkx::array<float, 1> make(std::vector<float> data) { return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())}); }
 } // namespace
 
 TEST_CASE("add/sub/mul/divはCPU計算と一致する") {

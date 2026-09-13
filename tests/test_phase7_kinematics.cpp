@@ -12,9 +12,7 @@
 using mkx::VulkanBackend;
 
 namespace {
-mkx::array<float, 1> make1(std::vector<float> data) {
-  return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())});
-}
+mkx::array<float, 1> make1(std::vector<float> data) { return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())}); }
 } // namespace
 
 TEST_CASE("kinematics kernel: 2body(world+hinge子)1関節1geomで実機dispatchが完走する") {

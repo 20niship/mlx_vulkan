@@ -12,9 +12,7 @@
 using mkx::VulkanBackend;
 
 namespace {
-mkx::array<float, 1> make1(std::vector<float> data) {
-  return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())});
-}
+mkx::array<float, 1> make1(std::vector<float> data) { return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())}); }
 } // namespace
 
 TEST_CASE("compute_kernel: 2入力2出力のカスタムカーネル基盤の疎通確認") {
@@ -54,7 +52,7 @@ TEST_CASE("compute_kernel: is_permanentな出力ノードは2回のdispatchで�
 
   int owner_token;
   const void* owner = &owner_token;
-  uint64_t loc_id    = mkx::persistent_location_hash(__FILE__, __LINE__);
+  uint64_t loc_id   = mkx::persistent_location_hash(__FILE__, __LINE__);
 
   auto a1   = make1({1, 2, 3, 4});
   auto out1 = kernel({a1}, {mkx::Shape{4}}, {4, 1, 1}, {4, 1, 1});

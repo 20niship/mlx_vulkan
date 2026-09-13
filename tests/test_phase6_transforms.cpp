@@ -13,9 +13,7 @@
 using mkx::VulkanBackend;
 
 namespace {
-mkx::array<float, 1> make1(std::vector<float> data) {
-  return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())});
-}
+mkx::array<float, 1> make1(std::vector<float> data) { return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())}); }
 } // namespace
 
 TEST_CASE("vmap: バッチ軸0で各環境ごとにsquareを適用する") {

@@ -15,9 +15,7 @@
 using mkx::VulkanBackend;
 
 namespace {
-mkx::array<float, 1> make1(std::vector<float> data) {
-  return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())});
-}
+mkx::array<float, 1> make1(std::vector<float> data) { return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())}); }
 
 mkx::array<float, 1> const1(float v, int64_t n) { return make1(std::vector<float>(static_cast<size_t>(n), v)); }
 } // namespace
@@ -446,21 +444,21 @@ TEST_CASE("複合グラフ: fusion後もbroadcast+add+mul+where+sqrt+addの結�
   auto c    = make1({2, 2, 2, 2});
   auto cond = make1({1, 0, 1, 0});
 
-  auto a_bc   = mkx::broadcast_to(a, mkx::Shape{4});
-  auto t      = mkx::add(a_bc, b);
-  auto u      = mkx::multiply(t, c);
-  auto result = mkx::where(cond, u, t);
+  auto a_bc    = mkx::broadcast_to(a, mkx::Shape{4});
+  auto t       = mkx::add(a_bc, b);
+  auto u       = mkx::multiply(t, c);
+  auto result  = mkx::where(cond, u, t);
   auto result2 = mkx::sqrt(result);
   auto result3 = mkx::add(result, result2);
 
   mkx::eval(result3);
 
-  auto v                     = result3.to_vector();
-  std::vector<float> b_data = {1, 2, 3, 4};
-  std::vector<float> c_data = {2, 2, 2, 2};
+  auto v                       = result3.to_vector();
+  std::vector<float> b_data    = {1, 2, 3, 4};
+  std::vector<float> c_data    = {2, 2, 2, 2};
   std::vector<float> cond_data = {1, 0, 1, 0};
   for(int i = 0; i < 4; ++i) {
-    float t_ref      = 10.0f + b_data[static_cast<size_t>(i)];
+    float t_ref       = 10.0f + b_data[static_cast<size_t>(i)];
     float u_ref       = t_ref * c_data[static_cast<size_t>(i)];
     float result_ref  = (cond_data[static_cast<size_t>(i)] != 0.0f) ? u_ref : t_ref;
     float result2_ref = std::sqrt(result_ref);
