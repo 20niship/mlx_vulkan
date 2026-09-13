@@ -9,12 +9,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unistd.h>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace mkx {
@@ -181,7 +183,7 @@ struct Context {
   ~Context() {
     if(device == VK_NULL_HANDLE) return;
     vkDeviceWaitIdle(device);
-    // register_persistentしたまま解除し忘れたバッファの安全網(通常はunregister_persistent+freeで空になっている)。
+    // release_persistent_for_ownerを呼び忘れたまま残ったバッファの安全網。
     for(auto* buf : persistent_bufs) {
 #ifdef MKX_USE_VMA
       vmaDestroyBuffer(allocator, buf->buffer, buf->allocation);
@@ -597,7 +599,68 @@ void VulkanBackend::wait_idle() {
   vkDeviceWaitIdle(ctx().device);
 }
 
-void VulkanBackend::register_persistent(Buffer* buf) { ctx().persistent_bufs.insert(buf); }
-void VulkanBackend::unregister_persistent(Buffer* buf) { ctx().persistent_bufs.erase(buf); }
+namespace {
+
+std::unordered_map<const void*, VulkanBackend::Buffer*>& transient_map() {
+  static std::unordered_map<const void*, VulkanBackend::Buffer*> m;
+  return m;
+}
+
+struct PersistentKeyHash {
+  size_t operator()(const std::pair<uint64_t, const void*>& k) const { return std::hash<uint64_t>{}(k.first) ^ (std::hash<const void*>{}(k.second) << 1); }
+};
+
+std::unordered_map<std::pair<uint64_t, const void*>, VulkanBackend::Buffer*, PersistentKeyHash>& permanent_map() {
+  static std::unordered_map<std::pair<uint64_t, const void*>, VulkanBackend::Buffer*, PersistentKeyHash> m;
+  return m;
+}
+
+} // namespace
+
+VulkanBackend::Buffer* VulkanBackend::get_or_allocate(const OpNode<VulkanBackend>* node, size_t nbytes) {
+  if(node->is_permanent) {
+    auto& pmap = permanent_map();
+    auto key   = std::make_pair(node->persistent_loc_id, node->persistent_owner);
+    auto it    = pmap.find(key);
+    if(it != pmap.end()) return it->second;
+    auto* buf = alloc(nbytes);
+    ctx().persistent_bufs.insert(buf); // 呼び忘れ安全網(~Context参照)への登録
+    pmap.emplace(key, buf);
+    return buf;
+  }
+  auto& tmap = transient_map();
+  auto it    = tmap.find(node);
+  if(it != tmap.end()) return it->second;
+  auto* buf = alloc(nbytes);
+  tmap.emplace(node, buf);
+  return buf;
+}
+
+bool VulkanBackend::has_buffer(const OpNode<VulkanBackend>* node) {
+  if(node->is_permanent) return permanent_map().count(std::make_pair(node->persistent_loc_id, node->persistent_owner)) > 0;
+  return transient_map().count(node) > 0;
+}
+
+void VulkanBackend::release_node(const OpNode<VulkanBackend>* node) {
+  if(node->is_permanent) return; // permanentの解放はrelease_persistent_for_ownerに一任
+  auto& tmap = transient_map();
+  auto it    = tmap.find(node);
+  if(it == tmap.end()) return;
+  free(it->second);
+  tmap.erase(it);
+}
+
+void VulkanBackend::release_persistent_for_owner(const void* owner) {
+  auto& pmap = permanent_map();
+  for(auto it = pmap.begin(); it != pmap.end();) {
+    if(it->first.second == owner) {
+      ctx().persistent_bufs.erase(it->second);
+      free(it->second);
+      it = pmap.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
 
 } // namespace mkx
