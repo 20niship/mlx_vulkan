@@ -398,19 +398,63 @@ template <class Backend> void eval_node(OpNode<Backend>& node, std::unordered_ma
   }
 
   if(group == ShaderGroup::CpuFallback) {
-    int n        = static_cast<int>(node.shape.back());
+    int n = static_cast<int>(node.shape.back());
+    // vmap中はaが{B,n,n}(cholesky)/{B,n,n}+{B,n}(solve_triangular)のバッチ実shapeになる。単純にB回CPUループする(グラフノード複製ではないので安価)。
+    int64_t batch = node.inputs[0]->shape.size() > 2 ? node.inputs[0]->shape[0] : 1;
+
     auto* in_buf = buffer_for<Backend>(node.inputs[0]);
     std::vector<float> a(static_cast<size_t>(shape_size(node.inputs[0]->shape)));
     Backend::download(in_buf, a.data(), a.size() * sizeof(float));
 
-    std::vector<float> result;
-    if(node.type == OpType::Cholesky) {
-      result = cholesky_cpu(a, n);
-    } else {
-      auto* b_buf = buffer_for<Backend>(node.inputs[1]);
-      std::vector<float> b(static_cast<size_t>(n));
+    std::vector<float> b;
+    typename Backend::Buffer* b_buf = nullptr;
+    if(node.type != OpType::Cholesky) {
+      b_buf = buffer_for<Backend>(node.inputs[1]);
+      b.resize(static_cast<size_t>(shape_size(node.inputs[1]->shape)));
       Backend::download(b_buf, b.data(), b.size() * sizeof(float));
-      result = forward_substitute(a, b, n);
+    }
+
+    std::vector<float> result;
+    result.reserve(a.size());
+    for(int64_t e = 0; e < batch; ++e) {
+      std::vector<float> a_row(a.begin() + e * n * n, a.begin() + (e + 1) * n * n);
+      std::vector<float> row;
+      if(node.type == OpType::Cholesky) {
+        row = cholesky_cpu(a_row, n);
+      } else {
+        std::vector<float> b_row(b.begin() + e * n, b.begin() + (e + 1) * n);
+        row = forward_substitute(a_row, b_row, n);
+      }
+      result.insert(result.end(), row.begin(), row.end());
+    }
+
+    auto* out = Backend::get_or_allocate(&node, result.size() * sizeof(float));
+    Backend::upload(out, result.data(), result.size() * sizeof(float));
+    node.evaluated = true;
+    return;
+  }
+
+  if(group == ShaderGroup::Reduce && (node.type == OpType::ArgMax || node.type == OpType::ArgMin) && node.inputs[0]->shape.size() > 1) {
+    // ArgMax/ArgMinには軸指定カーネルが無いため、vmap中(入力が{B,n})はCPUで行ごとに求める。
+    int64_t b    = node.inputs[0]->shape[0];
+    int64_t n    = node.inputs[0]->shape[1];
+    auto* in_buf = buffer_for<Backend>(node.inputs[0]);
+    std::vector<float> a(static_cast<size_t>(b * n));
+    Backend::download(in_buf, a.data(), a.size() * sizeof(float));
+
+    std::vector<float> result(static_cast<size_t>(b));
+    for(int64_t e = 0; e < b; ++e) {
+      int64_t best_idx = 0;
+      float best_val   = a[static_cast<size_t>(e * n)];
+      for(int64_t i = 1; i < n; ++i) {
+        float v     = a[static_cast<size_t>(e * n + i)];
+        bool better = (node.type == OpType::ArgMax) ? (v > best_val) : (v < best_val);
+        if(better) {
+          best_val = v;
+          best_idx = i;
+        }
+      }
+      result[static_cast<size_t>(e)] = static_cast<float>(best_idx);
     }
 
     auto* out = Backend::get_or_allocate(&node, result.size() * sizeof(float));
