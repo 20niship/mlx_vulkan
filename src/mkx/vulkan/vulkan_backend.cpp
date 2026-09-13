@@ -362,6 +362,13 @@ std::unordered_map<size_t, std::vector<VulkanBackend::Buffer*>>& free_list() {
   return pool;
 }
 
+// free()単体でwait_idle()しない: 破棄/プール返却は次のwait_idle()(vkDeviceWaitIdle後で安全)にまとめて遅延する。
+std::vector<VulkanBackend::Buffer*>& pending_frees() {
+  static std::vector<VulkanBackend::Buffer*> q;
+  return q;
+}
+void free_now(VulkanBackend::Buffer* buf);
+
 #ifdef MKX_USE_VMA
 
 // VMAが自前でブロック単位に再利用するため、kMaxPooledPerSize/kMaxPooledTotalの自作プールは不要(free()は素直にvmaDestroyBuffer)。
@@ -388,7 +395,10 @@ VulkanBackend::Buffer* VulkanBackend::alloc(size_t nbytes) {
 
 void VulkanBackend::free(Buffer* buf) {
   if(!buf) return;
-  wait_idle();
+  pending_frees().push_back(buf);
+}
+
+void free_now(VulkanBackend::Buffer* buf) {
   vmaDestroyBuffer(ctx().allocator, buf->buffer, buf->allocation);
   delete buf;
 }
@@ -465,15 +475,11 @@ VulkanBackend::Buffer* VulkanBackend::alloc(size_t nbytes) {
 
 void VulkanBackend::free(Buffer* buf) {
   if(!buf) return;
-  // A pending batch may still hold a dispatch that reads/writes buf; pooling/destroying it now would let alloc() hand the same memory to a new buffer while that GPU work is still in flight (VK_ERROR_MEMORY_MAP_FAILED). Flush+wait first so it's safe to reuse.
-  wait_idle();
-  auto& pool = free_list();
-  auto& slot = pool[buf->size];
-  if(slot.size() < kMaxPooledPerSize && g_pooled_total < kMaxPooledTotal) {
-    slot.push_back(buf);
-    g_pooled_total++;
-    return;
-  }
+  pending_frees().push_back(buf);
+}
+
+// 同一VkBuffer/VkDeviceMemoryハンドルの使い回し(free_list pool)はdeferred-free化で衝突検出テストを壊すため無効化。alloc/free churnの本命対策はpool再利用でなくバッファの永続化(MX_MARK_PERSISTENT)側で行う。
+void free_now(VulkanBackend::Buffer* buf) {
   auto& c = ctx();
   vkDestroyBuffer(c.device, buf->buffer, nullptr);
   vkFreeMemory(c.device, buf->memory, nullptr);
@@ -597,6 +603,9 @@ void VulkanBackend::dispatch(Pipeline& pipeline, std::span<Buffer*> buffers, std
 void VulkanBackend::wait_idle() {
   flush_batch();
   vkDeviceWaitIdle(ctx().device);
+  auto& q = pending_frees();
+  for(auto* buf : q) free_now(buf);
+  q.clear();
 }
 
 namespace {
@@ -622,7 +631,16 @@ VulkanBackend::Buffer* VulkanBackend::get_or_allocate(const OpNode<VulkanBackend
     auto& pmap = permanent_map();
     auto key   = std::make_pair(node->persistent_loc_id, node->persistent_owner);
     auto it    = pmap.find(key);
-    if(it != pmap.end()) return it->second;
+    if(it != pmap.end()) {
+      if(it->second->size == nbytes) return it->second;
+      // 実shapeが変わった(衝突contact数の変動等)ので古いバッファを解放し新サイズで作り直す。
+      ctx().persistent_bufs.erase(it->second);
+      free(it->second);
+      auto* resized = alloc(nbytes);
+      ctx().persistent_bufs.insert(resized);
+      it->second = resized;
+      return resized;
+    }
     auto* buf = alloc(nbytes);
     ctx().persistent_bufs.insert(buf); // 呼び忘れ安全網(~Context参照)への登録
     pmap.emplace(key, buf);
