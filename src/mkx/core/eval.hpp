@@ -335,7 +335,9 @@ template <class Backend> void eval_node(OpNode<Backend>& node, std::unordered_ma
   if(node.evaluated) return;
 
   if(node.type == OpType::Const) {
-    auto* buf = Backend::get_or_allocate(&node, static_cast<size_t>(shape_size(node.shape)) * dtype_size(node.dtype));
+    // Vulkan/MoltenVKは0バイトのvkAllocateMemoryを拒否するため、shapeに0次元を含む(要素数0の)Constでも最低1要素分は確保する。
+    size_t nbytes = std::max<size_t>(static_cast<size_t>(shape_size(node.shape)), 1) * dtype_size(node.dtype);
+    auto* buf     = Backend::get_or_allocate(&node, nbytes);
     if(!node.host_data.empty()) Backend::upload(buf, node.host_data.data(), node.host_data.size());
     node.evaluated = true;
     return;
