@@ -17,13 +17,19 @@ public:
 
   explicit array(NodePtr<Backend> node) : node_(std::move(node)) {}
 
-  // ホストデータをNodeにmemcpyしておくだけ(GPU uploadはeval時、Backend::get_or_allocateで確保したバッファへ行う)。
   array(std::vector<T> data, Shape shape) : node_(make_node<Backend>(OpType::Const, std::move(shape), dtype_of())) {
     node_->host_data.resize(data.size() * sizeof(T));
     std::memcpy(node_->host_data.data(), data.data(), node_->host_data.size());
   }
 
-  const Shape& shape() const { return node_->shape; }
+
+  template <ComputeBackend B = Backend>
+  explicit array1f(const std::vector<float>& data, Shape shape)
+    requires std::is_same_v<B, VulkanBackend>
+
+  const Shape& shape() const {
+    return node_->shape;
+  }
   Dtype dtype() const { return node_->dtype; }
 
   NodePtr<Backend>& node() { return node_; }
