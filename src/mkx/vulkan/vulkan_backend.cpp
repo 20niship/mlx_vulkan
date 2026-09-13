@@ -21,8 +21,7 @@ namespace mkx {
 namespace {
 
 #ifdef MKX_ENABLE_VALIDATION
-VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT /*type*/,
-                                               const VkDebugUtilsMessengerCallbackDataEXT* data, void* /*user_data*/) {
+VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT /*type*/, const VkDebugUtilsMessengerCallbackDataEXT* data, void* /*user_data*/) {
   const char* tag = (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) ? "ERROR" : (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) ? "WARN" : "INFO";
   fprintf(stderr, "[mkx][validation][%s] %s\n", tag, data->pMessage);
   return VK_FALSE;
@@ -166,9 +165,9 @@ struct Context {
 
 #ifdef MKX_USE_VMA
     VmaAllocatorCreateInfo vma_info{};
-    vma_info.physicalDevice = physical;
-    vma_info.device         = device;
-    vma_info.instance       = instance;
+    vma_info.physicalDevice   = physical;
+    vma_info.device           = device;
+    vma_info.instance         = instance;
     vma_info.vulkanApiVersion = VK_API_VERSION_1_3;
     vmaCreateAllocator(&vma_info, &allocator);
 #endif
