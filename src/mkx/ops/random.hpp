@@ -4,7 +4,9 @@
 #include <cstring>
 
 #include <mkx/core/array.hpp>
+#include <mkx/core/backend_concept.hpp>
 #include <mkx/core/op_node.hpp>
+#include <mkx/vulkan/vulkan_backend.hpp>
 
 namespace mkx::random {
 
@@ -15,7 +17,7 @@ struct Key {
 
 inline Key key(uint32_t seed) { return Key{seed}; }
 
-template <class T, size_t N> array<T, N> normal(Key k, Shape shape) {
+template <class T, size_t N, ComputeBackend Backend = VulkanBackend> array<T, N, Backend> normal(Key k, Shape shape) {
   float seed_as_float;
   std::memcpy(&seed_as_float, &k.seed, sizeof(float));
   std::vector<std::byte> imm(sizeof(float) * 2);
@@ -23,8 +25,8 @@ template <class T, size_t N> array<T, N> normal(Key k, Shape shape) {
   float zero = 0.0f;
   std::memcpy(imm.data() + sizeof(float), &zero, sizeof(float));
 
-  auto node = make_node(OpType::RandomNormal, std::move(shape), Dtype::Float32, {}, imm);
-  return array<T, N>(node);
+  auto node = make_node<Backend>(OpType::RandomNormal, std::move(shape), Dtype::Float32, {}, imm);
+  return array<T, N, Backend>(node);
 }
 
 } // namespace mkx::random
