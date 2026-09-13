@@ -13,11 +13,7 @@ using mkx::VulkanBackend;
 
 namespace {
 mkx::array<float, 1> make1(std::vector<float> data) {
-  auto a = mkx::zeros<float, 1>({static_cast<int64_t>(data.size())});
-  mkx::eval<VulkanBackend>(a);
-  auto* buf = static_cast<VulkanBackend::Buffer*>(a.node()->gpu_buffer);
-  VulkanBackend::upload(buf, data.data(), data.size() * sizeof(float));
-  return a;
+  return mkx::array<float, 1>(data, mkx::Shape{static_cast<int64_t>(data.size())});
 }
 } // namespace
 
@@ -36,9 +32,9 @@ TEST_CASE("compute_kernel: 2入力2出力のカスタムカーネル基盤の疎
   auto outputs = kernel({a, b}, {mkx::Shape{4}, mkx::Shape{4}}, {4, 1, 1}, {4, 1, 1});
   REQUIRE(outputs.size() == 2);
 
-  mkx::eval<VulkanBackend>(outputs[0], outputs[1]);
-  auto sum_v  = outputs[0].to_vector<VulkanBackend>();
-  auto diff_v = outputs[1].to_vector<VulkanBackend>();
+  mkx::eval(outputs[0], outputs[1]);
+  auto sum_v  = outputs[0].to_vector();
+  auto diff_v = outputs[1].to_vector();
 
   std::vector<float> expected_sum  = {11, 22, 33, 44};
   std::vector<float> expected_diff = {-9, -18, -27, -36};
@@ -48,7 +44,7 @@ TEST_CASE("compute_kernel: 2入力2出力のカスタムカーネル基盤の疎
   }
 }
 
-TEST_CASE("compute_kernel: preallocated_outputsで渡した永続バッファを2回のdispatchで再利用できる") {
+TEST_CASE("compute_kernel: is_permanentな出力ノードは2回のdispatchで同じBufferを再利用する") {
   auto kernel = mkx::fast::compute_kernel("scale_kernel", {"a"}, {"result"},
                                           R"GLSL(
         uint i = gl_GlobalInvocationID.x;
@@ -56,28 +52,29 @@ TEST_CASE("compute_kernel: preallocated_outputsで渡した永続バッファを
         result[i] = a[i] * 2.0;
         )GLSL");
 
-  auto* persistent = VulkanBackend::alloc(4 * sizeof(float));
-  VulkanBackend::register_persistent(persistent);
+  int owner_token;
+  const void* owner = &owner_token;
+  uint64_t loc_id    = mkx::persistent_location_hash(__FILE__, __LINE__);
 
   auto a1   = make1({1, 2, 3, 4});
-  auto out1 = kernel({a1}, {mkx::Shape{4}}, {4, 1, 1}, {4, 1, 1}, {persistent});
-  mkx::eval<VulkanBackend>(out1[0]);
-  auto v1 = out1[0].to_vector<VulkanBackend>();
+  auto out1 = kernel({a1}, {mkx::Shape{4}}, {4, 1, 1}, {4, 1, 1});
+  mkx::mark_permanent<VulkanBackend>(out1[0].node(), loc_id, owner);
+  mkx::eval(out1[0]);
+  auto v1 = out1[0].to_vector();
   CHECK(v1[0] == doctest::Approx(2.0f));
   CHECK(v1[3] == doctest::Approx(8.0f));
+  auto* buf1 = mkx::buffer_for<VulkanBackend>(out1[0].node());
 
-  auto a2 = make1({5, 6, 7, 8}); // make1自体のalloc/evalは計測窓の外で済ませておく(他テストとpoolを共有するため窓を最小化)
-
-  std::string stats_before_second = VulkanBackend::debug_stats();
-  auto out2 = kernel({a2}, {mkx::Shape{4}}, {4, 1, 1}, {4, 1, 1}, {persistent});
-  mkx::eval<VulkanBackend>(out2[0]);
-  auto v2 = out2[0].to_vector<VulkanBackend>();
+  auto a2   = make1({5, 6, 7, 8});
+  auto out2 = kernel({a2}, {mkx::Shape{4}}, {4, 1, 1}, {4, 1, 1});
+  mkx::mark_permanent<VulkanBackend>(out2[0].node(), loc_id, owner);
+  mkx::eval(out2[0]);
+  auto v2 = out2[0].to_vector();
   CHECK(v2[0] == doctest::Approx(10.0f));
   CHECK(v2[3] == doctest::Approx(16.0f));
+  auto* buf2 = mkx::buffer_for<VulkanBackend>(out2[0].node());
 
-  std::string stats_after_second = VulkanBackend::debug_stats();
-  CHECK(stats_before_second == stats_after_second); // 永続バッファへの2回目dispatchはBackend::alloc/freeを一切発生させないため統計は不変
+  CHECK(buf1 == buf2);
 
-  VulkanBackend::unregister_persistent(persistent);
-  VulkanBackend::free(persistent);
+  VulkanBackend::release_persistent_for_owner(owner);
 }
