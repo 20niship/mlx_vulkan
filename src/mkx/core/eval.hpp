@@ -135,6 +135,7 @@ template <class Backend> struct FusionPlan {
 template <class Backend> FusionPlan<Backend> build_fusion_plan(const std::vector<NodePtr<Backend>>& order, const std::unordered_set<OpNode<Backend>*>& roots) {
   std::unordered_map<OpNode<Backend>*, size_t> cluster_of;
   std::vector<std::vector<NodePtr<Backend>>> clusters;
+  bool any_fusion = false; // 実際に2ノード以上が同一クラスタへ吸収されたか
 
   for(auto& np : order) {
     OpNode<Backend>* n = np.get();
@@ -150,10 +151,19 @@ template <class Backend> FusionPlan<Backend> build_fusion_plan(const std::vector
     if(p0 && it != cluster_of.end()) {
       clusters[it->second].push_back(np);
       cluster_of[n] = it->second;
+      any_fusion    = true;
     } else {
       clusters.push_back({np});
       cluster_of[n] = clusters.size() - 1;
     }
+  }
+
+  // 何もfuseされていなければ元のorderが既に有効なunit順(Kahn's sort不要)、ここで早期リターンしてmap/優先度キュー構築コストを避ける。
+  if(!any_fusion) {
+    std::vector<std::vector<NodePtr<Backend>>> singleton_units;
+    singleton_units.reserve(order.size());
+    for(auto& np : order) singleton_units.push_back({np});
+    return FusionPlan<Backend>{std::move(singleton_units), {}};
   }
 
   // 別クラスタ(または非クラスタ)から読まれるクラスタ化済みノードは実バッファが必要。
