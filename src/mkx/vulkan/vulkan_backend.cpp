@@ -169,7 +169,9 @@ struct Context {
     vma_info.device           = device;
     vma_info.instance         = instance;
     vma_info.vulkanApiVersion = VK_API_VERSION_1_3;
-    vmaCreateAllocator(&vma_info, &allocator);
+    if(vmaCreateAllocator(&vma_info, &allocator) != VK_SUCCESS) {
+      throw std::runtime_error("mkx: vmaCreateAllocator failed");
+    }
 #endif
   }
 
