@@ -3,8 +3,11 @@
 #include <utility>
 #include <vector>
 
+#include <functional>
+
 #include <mkx/core/array.hpp>
 #include <mkx/core/backend_concept.hpp>
+#include <mkx/core/vmap_context.hpp>
 #include <mkx/ops/shape.hpp>
 #include <mkx/vulkan/vulkan_backend.hpp>
 
@@ -57,6 +60,14 @@ template <class T, size_t N, ComputeBackend Backend = VulkanBackend, class Fn> a
       return acc;
     }
   };
+}
+
+// mx.vmap(fn, in_axes=0, out_axes=0)準拠の複数入出力版。fnをグラフ複製なしで1回だけ呼ぶ(fn内部の演算はVmapGuard中自動でbatch軸を考慮)。
+template <ComputeBackend Backend = VulkanBackend> std::vector<array<float, 1, Backend>> vmap(const std::function<std::vector<array<float, 1, Backend>>(const std::vector<array<float, 1, Backend>>&)>& fn, const std::vector<array<float, 1, Backend>>& batched_inputs, int in_axes = 0, int out_axes = 0) {
+  (void)out_axes;
+  int64_t batch_size = batched_inputs[0].shape()[static_cast<size_t>(in_axes)];
+  VmapGuard guard(batch_size, in_axes);
+  return fn(batched_inputs);
 }
 
 // fusionはeval()が常に行うため、compile()はpassthroughのままでよい。
