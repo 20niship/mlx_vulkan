@@ -385,6 +385,10 @@ void VulkanBackend::upload(Buffer* buf, const void* data, size_t nbytes) {
     throw std::runtime_error("mkx: vmaMapMemory failed in upload (nbytes=" + std::to_string(nbytes) + ")");
   }
   std::memcpy(mapped, data, nbytes);
+  if(vmaFlushAllocation(c.allocator, buf->allocation, 0, VK_WHOLE_SIZE) != VK_SUCCESS) {
+    vmaUnmapMemory(c.allocator, buf->allocation);
+    throw std::runtime_error("mkx: vmaFlushAllocation failed in upload (nbytes=" + std::to_string(nbytes) + ")");
+  }
   vmaUnmapMemory(c.allocator, buf->allocation);
 }
 
