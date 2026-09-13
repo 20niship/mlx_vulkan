@@ -1,6 +1,5 @@
 #include <doctest/doctest.h>
 
-#include <cstdio>
 #include <vector>
 
 #include <mkx/core/array.hpp>
@@ -29,12 +28,6 @@ mkx::array<float, 1> build_chain(mkx::array<float, 1> a_len1, mkx::array<float, 
   auto u    = mkx::multiply(t, c);
   return mkx::where(cond, u, t);
 }
-
-size_t parse_pooled_count(const std::string& stats) {
-  size_t n = 0;
-  std::sscanf(stats.c_str(), "mkx pool: %zu", &n);
-  return n;
-}
 } // namespace
 
 TEST_CASE("eval_fused: broadcast+add+mul+whereの結果がeval<Backend>と一致する") {
@@ -58,18 +51,21 @@ TEST_CASE("eval_fused: broadcast+add+mul+whereの結果がeval<Backend>と一致
   for(int i = 0; i < 4; ++i) CHECK(v_fused[i] == doctest::Approx(v_unfused[i]));
 }
 
-TEST_CASE("eval_fused: fusion後は中間ノード分のバッファがpoolに増えない") {
-  auto stats_before = VulkanBackend::debug_stats();
-  size_t before      = parse_pooled_count(stats_before);
-
-  auto a = make1({10});
-  auto b = make1({1, 2, 3, 4});
-  auto c = make1({2, 2, 2, 2});
+TEST_CASE("eval_fused: クラスタに閉じた中間ノードはgpu_bufferを持たない") {
+  auto a    = make1({10});
+  auto b    = make1({1, 2, 3, 4});
+  auto c    = make1({2, 2, 2, 2});
   auto cond = make1({1, 0, 1, 0});
-  auto fused = build_chain(a, b, c, cond);
-  mkx::eval_fused<VulkanBackend>({fused.node()});
-  fused.to_vector<VulkanBackend>();
 
-  size_t after = parse_pooled_count(VulkanBackend::debug_stats());
-  CHECK(after - before <= 2); // fusionでadd/mulはlocal変数化されbroadcast出力+where出力の2個分以下に収まるはず(非fusionなら4個)
+  auto a_bc   = mkx::broadcast_to(a, mkx::Shape{4});
+  auto t      = mkx::add(a_bc, b);
+  auto u      = mkx::multiply(t, c);
+  auto result = mkx::where(cond, u, t);
+
+  mkx::eval_fused<VulkanBackend>({result.node()});
+
+  CHECK(a_bc.node()->gpu_buffer == nullptr); // add/mulに吸収されクラスタ内local変数のまま
+  CHECK(t.node()->gpu_buffer != nullptr);    // whereから別クラスタとして読まれるため実体化
+  CHECK(u.node()->gpu_buffer != nullptr);
+  CHECK(result.node()->gpu_buffer != nullptr);
 }

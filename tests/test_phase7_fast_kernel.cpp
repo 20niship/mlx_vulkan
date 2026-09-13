@@ -66,9 +66,9 @@ TEST_CASE("compute_kernel: preallocated_outputsで渡した永続バッファを
   CHECK(v1[0] == doctest::Approx(2.0f));
   CHECK(v1[3] == doctest::Approx(8.0f));
 
-  std::string stats_after_first = VulkanBackend::debug_stats();
+  auto a2 = make1({5, 6, 7, 8}); // make1自体のalloc/evalは計測窓の外で済ませておく(他テストとpoolを共有するため窓を最小化)
 
-  auto a2   = make1({5, 6, 7, 8});
+  std::string stats_before_second = VulkanBackend::debug_stats();
   auto out2 = kernel({a2}, {mkx::Shape{4}}, {4, 1, 1}, {4, 1, 1}, {persistent});
   mkx::eval<VulkanBackend>(out2[0]);
   auto v2 = out2[0].to_vector<VulkanBackend>();
@@ -76,7 +76,7 @@ TEST_CASE("compute_kernel: preallocated_outputsで渡した永続バッファを
   CHECK(v2[3] == doctest::Approx(16.0f));
 
   std::string stats_after_second = VulkanBackend::debug_stats();
-  CHECK(stats_after_first == stats_after_second); // 永続バッファはpoolに戻らずBackend::allocも発生しないため統計が不変
+  CHECK(stats_before_second == stats_after_second); // 永続バッファへの2回目dispatchはBackend::alloc/freeを一切発生させないため統計は不変
 
   VulkanBackend::unregister_persistent(persistent);
   VulkanBackend::free(persistent);
