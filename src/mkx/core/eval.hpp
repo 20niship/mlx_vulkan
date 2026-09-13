@@ -123,7 +123,8 @@ template <ComputeBackend Backend> void eval_node(OpNode& node, std::unordered_ma
 
   int64_t out_count      = shape_size(node.shape);
   int64_t dispatch_count = (group == ShaderGroup::Reduce) ? shape_size(node.inputs[0]->shape) : out_count;
-  auto* out              = Backend::alloc(static_cast<size_t>(out_count) * dtype_size(node.dtype));
+  bool preallocated      = !node.preallocated_outputs.empty() && node.preallocated_outputs[0] != nullptr;
+  auto* out              = preallocated ? static_cast<typename Backend::Buffer*>(node.preallocated_outputs[0]) : Backend::alloc(static_cast<size_t>(out_count) * dtype_size(node.dtype));
 
   std::string src = shader_source_for(node.type);
   size_t hash     = std::hash<std::string>{}(src);
@@ -153,8 +154,10 @@ template <ComputeBackend Backend> void eval_node(OpNode& node, std::unordered_ma
 
   Backend::dispatch(it->second, bufs, push_bytes, {groups_x, 1, 1});
 
-  node.gpu_buffer      = out;
-  node.free_gpu_buffer = [&node]() { Backend::free(static_cast<typename Backend::Buffer*>(node.gpu_buffer)); };
+  node.gpu_buffer = out;
+  if(!preallocated) {
+    node.free_gpu_buffer = [&node]() { Backend::free(static_cast<typename Backend::Buffer*>(node.gpu_buffer)); };
+  }
   node.evaluated       = true;
 }
 
