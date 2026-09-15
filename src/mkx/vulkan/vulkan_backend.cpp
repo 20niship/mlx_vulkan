@@ -232,6 +232,15 @@ Batch& batch() {
   return b;
 }
 
+// Phase C/D: begin_replay/end_replayで挟んだ区間のBatchはkeyごとに保持し続け(通常pathのflush_batchのようにcmd/poolを破棄しない)replay()で再submitする。
+std::unordered_map<const void*, Batch>& replay_cache() {
+  static std::unordered_map<const void*, Batch> m;
+  return m;
+}
+Batch* g_capturing = nullptr; // begin_replay〜end_replayの間だけ非null、dispatch()はこちらに記録する
+
+Batch& active_batch() { return g_capturing ? *g_capturing : batch(); }
+
 void flush_batch() {
   auto& b = batch();
   if(!b.open) return;
@@ -529,7 +538,7 @@ std::string VulkanBackend::debug_stats() {
 
 void VulkanBackend::dispatch(Pipeline& pipeline, std::span<Buffer*> buffers, std::span<const std::byte> push_data, std::array<uint32_t, 3> groups) {
   auto& c = ctx();
-  auto& b = batch();
+  auto& b = active_batch();
 
   if(!b.open) {
     VkCommandBufferAllocateInfo cmd_alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
@@ -539,7 +548,8 @@ void VulkanBackend::dispatch(Pipeline& pipeline, std::span<Buffer*> buffers, std
     vkAllocateCommandBuffers(c.device, &cmd_alloc, &b.cmd);
 
     VkCommandBufferBeginInfo begin_info{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    // 通常pathは1回使い切り、replay captureは同じcommand bufferを繰り返しsubmitするためSIMULTANEOUS_USE_BITが要る。
+    begin_info.flags = g_capturing ? VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT : VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(b.cmd, &begin_info);
     b.open               = true;
     b.has_prior_dispatch = false;
@@ -612,6 +622,55 @@ void VulkanBackend::wait_idle() {
   auto& q = pending_frees();
   for(auto* buf : q) free_now(buf);
   q.clear();
+}
+
+bool VulkanBackend::has_replay(const void* key) { return replay_cache().count(key) > 0; }
+
+void VulkanBackend::begin_replay(const void* key) {
+  wait_idle(); // 通常batchを完全に片付けてから記録開始(混線防止)
+  // rgはcmd未設定のまま; 実際のalloc+beginはdispatch()の既存の遅延初期化(!b.open時)に任せる。
+  g_capturing = &replay_cache()[key];
+}
+
+void VulkanBackend::end_replay(const void* key) {
+  auto& c  = ctx();
+  auto& rg = replay_cache().at(key);
+  vkEndCommandBuffer(rg.cmd);
+  g_capturing = nullptr;
+
+  VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+  submit.commandBufferCount = 1;
+  submit.pCommandBuffers    = &rg.cmd;
+  vkQueueSubmit(c.queue, 1, &submit, VK_NULL_HANDLE);
+  vkQueueWaitIdle(c.queue);
+
+  auto& q = pending_frees();
+  for(auto* buf : q) free_now(buf);
+  q.clear();
+}
+
+void VulkanBackend::replay(const void* key) {
+  auto& c  = ctx();
+  auto& rg = replay_cache().at(key);
+  VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+  submit.commandBufferCount = 1;
+  submit.pCommandBuffers    = &rg.cmd;
+  vkQueueSubmit(c.queue, 1, &submit, VK_NULL_HANDLE);
+  vkQueueWaitIdle(c.queue);
+
+  // replay()はeval_nodes()/wait_idle()を経由しないため、ここで自前でpending_freesを drain しないと無限に溜まる。
+  auto& q = pending_frees();
+  for(auto* buf : q) free_now(buf);
+  q.clear();
+}
+
+void VulkanBackend::invalidate_replay(const void* key) {
+  auto it = replay_cache().find(key);
+  if(it == replay_cache().end()) return;
+  auto& c = ctx();
+  vkFreeCommandBuffers(c.device, c.command_pool, 1, &it->second.cmd);
+  for(auto pool : it->second.pending_desc_pools) vkDestroyDescriptorPool(c.device, pool, nullptr);
+  replay_cache().erase(it);
 }
 
 namespace {
