@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include <mkx/core/backend_concept.hpp>
 #include <mkx/core/types.hpp>
 
 namespace mkx {
@@ -75,13 +76,13 @@ enum class OpType {
   RandomNormal,
 
   // Phase7: mx::fast::metal_kernel互換のカスタムカーネル
-  CustomKernel,       // 所有者: 実際にdispatchし、全出力バッファをmulti_outputsに持つ
-  CustomKernelOutput, // 別名: 所有者ノードのmulti_outputs[output_index]を指すだけ
+  CustomKernel,       // 所有者: 実際にdispatchする。出力は自身のoutput_aliasesが指す別名ノード群
+  CustomKernelOutput, // 別名: 所有者ノードのoutput_index番目の出力を指すだけ
 };
 
 // dispatch時にどのGLSLテンプレート群を使うかの分類。
 enum class ShaderGroup {
-  View,        // shader不要、gpu_bufferを入力から共有するだけ
+  View,        // shader不要、入力のバッファをそのまま共有する
   Creation,    // 入力0、出力のみ
   Unary,       // 入力1、同一index参照 (Diag/Tril/Triu/Copyも同一テンプレートに同居)
   Binary,      // 入力2、同一index参照
@@ -158,20 +159,23 @@ inline int op_arity(OpType t) {
     case ShaderGroup::Take:
     case ShaderGroup::MatMul: return 2;
     case ShaderGroup::Ternary: return 3;
-    case ShaderGroup::Custom: return -1; // eval_node側で個別処理するため未使用
+    case ShaderGroup::Custom: return -1; // eval側で個別処理するため未使用
   }
   return 2;
 }
 
-struct OpNode {
+// GPUバッファはBackend側がnode自身のアドレスをキーに管理する(get_or_allocate/release_node)ため、ここにBuffer型は置かない。
+template <ComputeBackend Backend> struct OpNode {
   OpType type;
   Shape shape;
   Dtype dtype;
-  std::vector<std::shared_ptr<OpNode>> inputs;
+  std::vector<std::shared_ptr<OpNode<Backend>>> inputs;
   std::vector<std::byte> imm_data; // スカラー定数・形状メタデータ(push constant化)
 
-  void* gpu_buffer = nullptr; // eval後のバッファハンドル(backend固有、void*で抽象化)
-  bool evaluated   = false;
+  bool evaluated = false;
+
+  // OpType::Const専用: ホスト側にmemcpyしておいた生データ。evalのタイミングでBackendへupload。
+  std::vector<std::byte> host_data;
 
   // 将来のgrad対応用に予約。Phase0-2では未使用、常にnullptr。
   void* backward_fn = nullptr;
@@ -181,28 +185,48 @@ struct OpNode {
   std::vector<Shape> custom_output_shapes;
   std::vector<Dtype> custom_output_dtypes;
   std::array<uint32_t, 3> custom_groups{1, 1, 1};
-  std::vector<void*> multi_outputs;
+  // 所有者から見た各出力の別名ノード(CustomKernelOutput)。グラフ構造情報であり、値そのものは持たない。
+  std::vector<std::weak_ptr<OpNode<Backend>>> output_aliases;
 
-  // Phase7 CustomKernelOutput(別名ノード)専用: 所有者のmulti_outputsのindex
+  // Phase7 CustomKernelOutput(別名ノード)専用: 所有者(inputs[0])のoutput_aliasesの何番目か
   int output_index = -1;
 
-  // gpu_bufferはbackend非依存void*で型消去されているため解放はBackendを知るeval_node側がここに設定するコールバックで行う。View/CustomKernelOutput(バッファ共有のみ)は未設定のため二重解放にならない。
-  std::function<void()> free_gpu_buffer;
-  ~OpNode() {
-    if(free_gpu_buffer) free_gpu_buffer();
-  }
+  // 呼び出し場所(loc_id)+owner単位でバッファを使い回す永続ノード用のID情報(Buffer型そのものは持たない)。
+  bool is_permanent            = false;
+  uint64_t persistent_loc_id   = 0;
+  const void* persistent_owner = nullptr;
 };
 
-using NodePtr = std::shared_ptr<OpNode>;
+template <ComputeBackend Backend> using NodePtr = std::shared_ptr<OpNode<Backend>>;
 
-inline NodePtr make_node(OpType type, Shape shape, Dtype dtype, std::vector<NodePtr> inputs = {}, std::vector<std::byte> imm_data = {}) {
-  auto node      = std::make_shared<OpNode>();
-  node->type     = type;
-  node->shape    = std::move(shape);
-  node->dtype    = dtype;
-  node->inputs   = std::move(inputs);
-  node->imm_data = std::move(imm_data);
-  return node;
+template <ComputeBackend Backend> NodePtr<Backend> make_node(OpType type, Shape shape, Dtype dtype, std::vector<NodePtr<Backend>> inputs = {}, std::vector<std::byte> imm_data = {}) {
+  auto* raw     = new OpNode<Backend>();
+  raw->type     = type;
+  raw->shape    = std::move(shape);
+  raw->dtype    = dtype;
+  raw->inputs   = std::move(inputs);
+  raw->imm_data = std::move(imm_data);
+  // バッファ解放はBackend側の責務。node解体時にBackendへ後始末(release_node)を委ねる。
+  return NodePtr<Backend>(raw, [](OpNode<Backend>* p) {
+    Backend::release_node(p);
+    delete p;
+  });
+}
+
+// Reshape/Flatten(View)はバッファを共有するだけなので、入力を辿って実体を持つノードのBufferを取得する。
+template <ComputeBackend Backend> typename Backend::Buffer* buffer_for(const NodePtr<Backend>& n) {
+  OpNode<Backend>* cur = n.get();
+  while((cur->type == OpType::Reshape || cur->type == OpType::Flatten) && !cur->inputs.empty()) cur = cur->inputs[0].get();
+  return Backend::get_or_allocate(cur, static_cast<size_t>(shape_size(cur->shape)) * dtype_size(cur->dtype));
+}
+
+inline uint64_t persistent_location_hash(const char* file, int line) { return std::hash<std::string>{}(std::string(file) + ":" + std::to_string(line)); }
+
+// evalする前に呼ぶこと。同じ(loc_id, owner)なら次回以降も同じBufferを使い回す。
+template <ComputeBackend Backend> void mark_permanent(const NodePtr<Backend>& node, uint64_t loc_id, const void* owner) {
+  node->is_permanent      = true;
+  node->persistent_loc_id = loc_id;
+  node->persistent_owner  = owner;
 }
 
 } // namespace mkx

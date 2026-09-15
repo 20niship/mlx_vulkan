@@ -11,16 +11,6 @@
 
 using mkx::VulkanBackend;
 
-namespace {
-mkx::array<float, 1> make1(std::vector<float> data) {
-  auto a = mkx::zeros<float, 1>({static_cast<int64_t>(data.size())});
-  mkx::eval<VulkanBackend>(a);
-  auto* buf = static_cast<VulkanBackend::Buffer*>(a.node()->gpu_buffer);
-  VulkanBackend::upload(buf, data.data(), data.size() * sizeof(float));
-  return a;
-}
-} // namespace
-
 TEST_CASE("euler_devmem kernel: nv=100の対角質量行列でL_scratch経由の積分が完走する") {
   const int nv = 100;
   const int nq = nv;
@@ -29,13 +19,13 @@ TEST_CASE("euler_devmem kernel: nv=100の対角質量行列でL_scratch経由の
   // 対角質量行列(dof iの質量は i+1)、他は0
   std::vector<float> qM(static_cast<size_t>(nv * nv), 0.0f);
   for(int i = 0; i < nv; i++) qM[static_cast<size_t>(i * nv + i)] = static_cast<float>(i + 1);
-  auto qM_arr = make1(qM);
+  auto qM_arr = mkx::array<float, 1>::array1f(qM, mkx::Shape{});
 
   std::vector<float> qfrc(static_cast<size_t>(nv), 1.0f);
-  auto qfrc_smooth     = make1(qfrc);
-  auto qfrc_constraint = make1(std::vector<float>(static_cast<size_t>(nv), 0.0f));
-  auto qvel_in         = make1(std::vector<float>(static_cast<size_t>(nv), 0.0f));
-  auto qpos_in         = make1(std::vector<float>(static_cast<size_t>(nq), 0.0f));
+  auto qfrc_smooth     = mkx::array<float, 1>::array1f(qfrc, mkx::Shape{});
+  auto qfrc_constraint = mkx::array<float, 1>::array1f(std::vector<float>(static_cast<size_t>(nv), 0.0f), mkx::Shape{});
+  auto qvel_in         = mkx::array<float, 1>::array1f(std::vector<float>(static_cast<size_t>(nv), 0.0f), mkx::Shape{});
+  auto qpos_in         = mkx::array<float, 1>::array1f(std::vector<float>(static_cast<size_t>(nq), 0.0f), mkx::Shape{});
 
   std::vector<int> simple_qa, simple_da;
   for(int i = 0; i < nv; i++) {
@@ -49,10 +39,10 @@ TEST_CASE("euler_devmem kernel: nv=100の対角質量行列でL_scratch経由の
   auto outputs = kernel({qM_arr, qfrc_smooth, qfrc_constraint, qvel_in, qpos_in}, {mkx::Shape{nq}, mkx::Shape{nv}, mkx::Shape{nv}, mkx::Shape{static_cast<int64_t>(nv) * nv}}, {1, 1, 1}, {1, 1, 1});
   REQUIRE(outputs.size() == 4);
 
-  mkx::eval<VulkanBackend>(outputs[0], outputs[1], outputs[2], outputs[3]);
-  auto qpos_out = outputs[0].to_vector<VulkanBackend>();
-  auto qvel_out = outputs[1].to_vector<VulkanBackend>();
-  auto qacc_out = outputs[2].to_vector<VulkanBackend>();
+  mkx::eval(outputs[0], outputs[1], outputs[2], outputs[3]);
+  auto qpos_out = outputs[0].to_vector();
+  auto qvel_out = outputs[1].to_vector();
+  auto qacc_out = outputs[2].to_vector();
 
   REQUIRE(qpos_out.size() == static_cast<size_t>(nq));
   REQUIRE(qvel_out.size() == static_cast<size_t>(nv));

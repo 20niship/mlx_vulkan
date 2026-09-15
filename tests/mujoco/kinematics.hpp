@@ -8,7 +8,7 @@
 
 namespace mkx::mujoco {
 
-inline mkx::fast::Kernel make_kinematics_kernel(int nbody, int njnt, int nq, int ngeom) {
+inline mkx::fast::Kernel<> make_kinematics_kernel(int nbody, int njnt, int nq, int ngeom) {
   std::string header = R"GLSL(
 int mkx_I(float x) { return int(round(x)); }
 

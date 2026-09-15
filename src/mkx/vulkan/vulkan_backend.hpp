@@ -13,6 +13,8 @@
 #include <vk_mem_alloc.h>
 #endif
 
+#include <mkx/core/op_node.hpp>
+
 namespace mkx {
 
 struct VulkanBackend {
@@ -43,6 +45,15 @@ struct VulkanBackend {
 
   // Live allocator/pool stats (buffer count + bytes currently retained), for leak diagnostics. Cheap; safe to poll between benchmark iterations.
   static std::string debug_stats();
+
+  // node自身のアドレスをキーに初回alloc・以降は同じBufferを返す(is_permanentなら(loc_id,owner)キーの永続マップに委譲)。
+  static Buffer* get_or_allocate(const OpNode<VulkanBackend>* node, size_t nbytes);
+  // get_or_allocateと違い新規allocは行わない。既にバッファが実体化済みかどうかだけを調べる(テスト用)。
+  static bool has_buffer(const OpNode<VulkanBackend>* node);
+  // NodePtrのカスタムdeleterから呼ばれる。transientなら対応するBufferをfree、permanentなら何もしない。
+  static void release_node(const OpNode<VulkanBackend>* node);
+  // owner一致の永続バッファを全てfreeする。
+  static void release_persistent_for_owner(const void* owner);
 };
 
 } // namespace mkx

@@ -11,47 +11,39 @@
 
 using mkx::VulkanBackend;
 
-namespace {
-mkx::array<float, 1> make1(std::vector<float> data) {
-  auto a = mkx::zeros<float, 1>({static_cast<int64_t>(data.size())});
-  mkx::eval<VulkanBackend>(a);
-  auto* buf = static_cast<VulkanBackend::Buffer*>(a.node()->gpu_buffer);
-  VulkanBackend::upload(buf, data.data(), data.size() * sizeof(float));
-  return a;
-}
-} // namespace
+namespace {} // namespace
 
 TEST_CASE("kinematics kernel: 2body(world+hinge子)1関節1geomで実機dispatchが完走する") {
   // body0=world(root), body1=hinge軸(0,0,1)でbody0から(0,0,1)オフセット
-  auto body_parentid = make1({0, 0});
-  auto body_pos      = make1({0, 0, 0, 0, 0, 1});
-  auto body_quat     = make1({1, 0, 0, 0, 1, 0, 0, 0});
-  auto body_ipos     = make1({0, 0, 0, 0, 0, 0});
-  auto body_iquat    = make1({1, 0, 0, 0, 1, 0, 0, 0});
-  auto body_jntadr   = make1({-1, 0});
-  auto body_jntnum   = make1({0, 1});
-  auto jnt_type      = make1({3}); // HINGE
-  auto jnt_qposadr   = make1({0});
-  auto jnt_pos       = make1({0, 0, 0});
-  auto jnt_axis      = make1({0, 0, 1});
-  auto qpos0         = make1({0});
-  auto geom_bodyid   = make1({1});
-  auto geom_pos      = make1({0, 0, 0});
-  auto geom_quat     = make1({1, 0, 0, 0});
-  auto qpos          = make1({0.5f});
+  auto body_parentid = mkx::array<float, 1>::array1f({0, 0}, mkx::Shape{});
+  auto body_pos      = mkx::array<float, 1>::array1f({0, 0, 0, 0, 0, 1}, mkx::Shape{});
+  auto body_quat     = mkx::array<float, 1>::array1f({1, 0, 0, 0, 1, 0, 0, 0}, mkx::Shape{});
+  auto body_ipos     = mkx::array<float, 1>::array1f({0, 0, 0, 0, 0, 0}, mkx::Shape{});
+  auto body_iquat    = mkx::array<float, 1>::array1f({1, 0, 0, 0, 1, 0, 0, 0}, mkx::Shape{});
+  auto body_jntadr   = mkx::array<float, 1>::array1f({-1, 0}, mkx::Shape{});
+  auto body_jntnum   = mkx::array<float, 1>::array1f({0, 1}, mkx::Shape{});
+  auto jnt_type      = mkx::array<float, 1>::array1f({3}, mkx::Shape{}); // HINGE
+  auto jnt_qposadr   = mkx::array<float, 1>::array1f({0}, mkx::Shape{});
+  auto jnt_pos       = mkx::array<float, 1>::array1f({0, 0, 0}, mkx::Shape{});
+  auto jnt_axis      = mkx::array<float, 1>::array1f({0, 0, 1}, mkx::Shape{});
+  auto qpos0         = mkx::array<float, 1>::array1f({0}, mkx::Shape{});
+  auto geom_bodyid   = mkx::array<float, 1>::array1f({1}, mkx::Shape{});
+  auto geom_pos      = mkx::array<float, 1>::array1f({0, 0, 0}, mkx::Shape{});
+  auto geom_quat     = mkx::array<float, 1>::array1f({1, 0, 0, 0}, mkx::Shape{});
+  auto qpos          = mkx::array<float, 1>::array1f({0.5f}, mkx::Shape{});
 
   auto kernel  = mkx::mujoco::make_kinematics_kernel(/*nbody=*/2, /*njnt=*/1, /*nq=*/1, /*ngeom=*/1);
   auto outputs = kernel({body_parentid, body_pos, body_quat, body_ipos, body_iquat, body_jntadr, body_jntnum, jnt_type, jnt_qposadr, jnt_pos, jnt_axis, qpos0, geom_bodyid, geom_pos, geom_quat, qpos},
                         {mkx::Shape{6}, mkx::Shape{8}, mkx::Shape{18}, mkx::Shape{6}, mkx::Shape{18}, mkx::Shape{3}, mkx::Shape{3}, mkx::Shape{3}, mkx::Shape{9}}, {1, 1, 1}, {1, 1, 1});
 
   REQUIRE(outputs.size() == 9);
-  mkx::eval<VulkanBackend>(outputs[0], outputs[1], outputs[2], outputs[3], outputs[4], outputs[5], outputs[6], outputs[7], outputs[8]);
+  mkx::eval(outputs[0], outputs[1], outputs[2], outputs[3], outputs[4], outputs[5], outputs[6], outputs[7], outputs[8]);
 
-  auto xpos      = outputs[0].to_vector<VulkanBackend>();
-  auto xquat     = outputs[1].to_vector<VulkanBackend>();
-  auto xmat      = outputs[2].to_vector<VulkanBackend>();
-  auto xanchor   = outputs[5].to_vector<VulkanBackend>();
-  auto geom_xpos = outputs[7].to_vector<VulkanBackend>();
+  auto xpos      = outputs[0].to_vector();
+  auto xquat     = outputs[1].to_vector();
+  auto xmat      = outputs[2].to_vector();
+  auto xanchor   = outputs[5].to_vector();
+  auto geom_xpos = outputs[7].to_vector();
 
   REQUIRE(xpos.size() == 6);
   REQUIRE(xquat.size() == 8);

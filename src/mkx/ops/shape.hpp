@@ -4,7 +4,9 @@
 #include <vector>
 
 #include <mkx/core/array.hpp>
+#include <mkx/core/backend_concept.hpp>
 #include <mkx/core/op_node.hpp>
+#include <mkx/core/vmap_context.hpp>
 #include <mkx/shaders/shader_source.hpp>
 
 namespace mkx {
@@ -23,11 +25,29 @@ inline std::vector<std::byte> shape_push_bytes(Push push) { return pack_push(pus
 
 } // namespace detail
 
-template <class T, size_t N, size_t M = N> array<T, M> reshape(const array<T, N>& a, Shape new_shape) { return array<T, M>(make_node(OpType::Reshape, std::move(new_shape), a.dtype(), {a.node()})); }
+// vmap中は呼び出し元が渡すnew_shapeは「batch軸を除いた」形状のまま(先頭にbatch軸を自動で足す)。
+template <class T, size_t N, size_t M, ComputeBackend Backend> array<T, M, Backend> reshape(const array<T, N, Backend>& a, Shape new_shape) {
+  if(in_vmap()) new_shape.insert(new_shape.begin(), vmap_batch_size());
+  return array<T, M, Backend>(make_node<Backend>(OpType::Reshape, std::move(new_shape), a.dtype(), {a.node()}));
+}
+template <class T, size_t N, ComputeBackend Backend> array<T, N, Backend> reshape(const array<T, N, Backend>& a, Shape new_shape) { return reshape<T, N, N, Backend>(a, std::move(new_shape)); }
 
-template <class T, size_t N> array<T, 1> flatten(const array<T, N>& a) { return array<T, 1>(make_node(OpType::Flatten, Shape{shape_size(a.shape())}, a.dtype(), {a.node()})); }
+// vmap中はbatch軸(先頭)を残し、残りの軸だけをflattenする。
+template <class T, size_t N, ComputeBackend Backend> array<T, 1, Backend> flatten(const array<T, N, Backend>& a) {
+  if(in_vmap()) {
+    int64_t b = a.shape()[0];
+    return array<T, 1, Backend>(make_node<Backend>(OpType::Flatten, Shape{b, shape_size(a.shape()) / b}, a.dtype(), {a.node()}));
+  }
+  return array<T, 1, Backend>(make_node<Backend>(OpType::Flatten, Shape{shape_size(a.shape())}, a.dtype(), {a.node()}));
+}
 
-template <class T, size_t N> array<T, N> transpose(const array<T, N>& a, std::vector<int> perm) {
+// vmap中は呼び出し元が渡すperm/reps/starts/stops/target_shapeは「batch軸を除いた」長さのまま(先頭にbatch軸のpassthrough分を自動で足す)。
+template <class T, size_t N, ComputeBackend Backend> array<T, N, Backend> transpose(const array<T, N, Backend>& a, std::vector<int> perm) {
+  if(in_vmap()) {
+    std::vector<int> p{0};
+    for(int x : perm) p.push_back(x + 1);
+    perm = std::move(p);
+  }
   auto in_strides = detail::row_major_strides(a.shape());
   Shape out_shape(perm.size());
   Push push;
@@ -38,11 +58,12 @@ template <class T, size_t N> array<T, N> transpose(const array<T, N>& a, std::ve
     push.in_shape[d]   = static_cast<uint32_t>(out_shape[d]);
     push.in_strides[d] = in_strides[static_cast<size_t>(perm[d])];
   }
-  auto node = make_node(OpType::Transpose, out_shape, a.dtype(), {a.node()}, detail::shape_push_bytes(push));
-  return array<T, N>(node);
+  auto node = make_node<Backend>(OpType::Transpose, out_shape, a.dtype(), {a.node()}, detail::shape_push_bytes(push));
+  return array<T, N, Backend>(node);
 }
 
-template <class T, size_t N> array<T, N> broadcast_to(const array<T, N>& a, Shape target_shape) {
+template <class T, size_t N, ComputeBackend Backend> array<T, N, Backend> broadcast_to(const array<T, N, Backend>& a, Shape target_shape) {
+  if(in_vmap()) target_shape.insert(target_shape.begin(), vmap_batch_size());
   Shape padded = a.shape();
   while(padded.size() < target_shape.size()) padded.insert(padded.begin(), 1);
   auto in_strides = detail::row_major_strides(padded);
@@ -54,11 +75,12 @@ template <class T, size_t N> array<T, N> broadcast_to(const array<T, N>& a, Shap
     push.in_shape[d]   = static_cast<uint32_t>(target_shape[d]);
     push.in_strides[d] = (padded[d] == 1 && target_shape[d] != 1) ? 0 : in_strides[d];
   }
-  auto node = make_node(OpType::BroadcastTo, target_shape, a.dtype(), {a.node()}, detail::shape_push_bytes(push));
-  return array<T, N>(node);
+  auto node = make_node<Backend>(OpType::BroadcastTo, target_shape, a.dtype(), {a.node()}, detail::shape_push_bytes(push));
+  return array<T, N, Backend>(node);
 }
 
-template <class T, size_t N> array<T, N> tile(const array<T, N>& a, std::vector<int64_t> reps) {
+template <class T, size_t N, ComputeBackend Backend> array<T, N, Backend> tile(const array<T, N, Backend>& a, std::vector<int64_t> reps) {
+  if(in_vmap()) reps.insert(reps.begin(), 1);
   auto in_strides = detail::row_major_strides(a.shape());
   Shape out_shape(a.shape().size());
   Push push;
@@ -69,11 +91,15 @@ template <class T, size_t N> array<T, N> tile(const array<T, N>& a, std::vector<
     push.in_shape[d]   = static_cast<uint32_t>(a.shape()[d]);
     push.in_strides[d] = in_strides[d];
   }
-  auto node = make_node(OpType::Tile, out_shape, a.dtype(), {a.node()}, detail::shape_push_bytes(push));
-  return array<T, N>(node);
+  auto node = make_node<Backend>(OpType::Tile, out_shape, a.dtype(), {a.node()}, detail::shape_push_bytes(push));
+  return array<T, N, Backend>(node);
 }
 
-template <class T, size_t N> array<T, N> slice(const array<T, N>& a, std::vector<int64_t> starts, std::vector<int64_t> stops) {
+template <class T, size_t N, ComputeBackend Backend> array<T, N, Backend> slice(const array<T, N, Backend>& a, std::vector<int64_t> starts, std::vector<int64_t> stops) {
+  if(in_vmap()) {
+    starts.insert(starts.begin(), 0);
+    stops.insert(stops.begin(), vmap_batch_size());
+  }
   auto in_strides = detail::row_major_strides(a.shape());
   Shape out_shape(a.shape().size());
   Push push;
@@ -87,11 +113,11 @@ template <class T, size_t N> array<T, N> slice(const array<T, N>& a, std::vector
     offset += static_cast<uint32_t>(starts[d]) * in_strides[d];
   }
   push.in_base_offset = offset;
-  auto node           = make_node(OpType::Slice, out_shape, a.dtype(), {a.node()}, detail::shape_push_bytes(push));
-  return array<T, N>(node);
+  auto node           = make_node<Backend>(OpType::Slice, out_shape, a.dtype(), {a.node()}, detail::shape_push_bytes(push));
+  return array<T, N, Backend>(node);
 }
 
-template <class T, size_t N> array<T, N> concatenate(const array<T, N>& a, const array<T, N>& b, int axis) {
+template <class T, size_t N, ComputeBackend Backend> array<T, N, Backend> concatenate(const array<T, N, Backend>& a, const array<T, N, Backend>& b, int axis) {
   auto a_strides                       = detail::row_major_strides(a.shape());
   auto b_strides                       = detail::row_major_strides(b.shape());
   Shape out_shape                      = a.shape();
@@ -107,22 +133,23 @@ template <class T, size_t N> array<T, N> concatenate(const array<T, N>& a, const
   push.in_base_offset = static_cast<uint32_t>(axis);
   push.p0             = static_cast<float>(a.shape()[static_cast<size_t>(axis)]); // split
 
-  auto node = make_node(OpType::Concatenate, out_shape, a.dtype(), {a.node(), b.node()}, detail::shape_push_bytes(push));
-  return array<T, N>(node);
+  auto node = make_node<Backend>(OpType::Concatenate, out_shape, a.dtype(), {a.node(), b.node()}, detail::shape_push_bytes(push));
+  return array<T, N, Backend>(node);
 }
 
-template <class T, size_t N> array<T, N> stack(const array<T, N - 1>& a, const array<T, N - 1>& b, int axis) {
+template <class T, size_t N, ComputeBackend Backend> array<T, N, Backend> stack(const array<T, N - 1, Backend>& a, const array<T, N - 1, Backend>& b, int axis) {
   Shape unsq = a.shape();
   unsq.insert(unsq.begin() + axis, 1);
-  auto a_view = reshape<T, N - 1, N>(a, unsq);
-  auto b_view = reshape<T, N - 1, N>(b, unsq);
+  auto a_view = reshape<T, N - 1, N, Backend>(a, unsq);
+  auto b_view = reshape<T, N - 1, N, Backend>(b, unsq);
   return concatenate(a_view, b_view, axis);
 }
 
-template <class T, size_t N> array<T, N> take(const array<T, N>& data, const array<float, 1>& indices, int axis) {
-  auto data_strides                    = detail::row_major_strides(data.shape());
-  Shape out_shape                      = data.shape();
-  out_shape[static_cast<size_t>(axis)] = indices.shape()[0];
+template <class T, size_t N, ComputeBackend Backend> array<T, N, Backend> take(const array<T, N, Backend>& data, const array<float, 1, Backend>& indices, int axis) {
+  int eff_axis                             = in_vmap() ? axis + 1 : axis;
+  auto data_strides                        = detail::row_major_strides(data.shape());
+  Shape out_shape                          = data.shape();
+  out_shape[static_cast<size_t>(eff_axis)] = indices.shape()[0];
 
   Push push;
   push.ndim = static_cast<uint32_t>(out_shape.size());
@@ -130,43 +157,43 @@ template <class T, size_t N> array<T, N> take(const array<T, N>& data, const arr
     push.out_shape[d]  = static_cast<uint32_t>(out_shape[d]);
     push.in_strides[d] = data_strides[d];
   }
-  push.in_base_offset = static_cast<uint32_t>(axis);
+  push.in_base_offset = static_cast<uint32_t>(eff_axis);
 
-  auto node = make_node(OpType::Take, out_shape, data.dtype(), {data.node(), indices.node()}, detail::shape_push_bytes(push));
-  return array<T, N>(node);
+  auto node = make_node<Backend>(OpType::Take, out_shape, data.dtype(), {data.node(), indices.node()}, detail::shape_push_bytes(push));
+  return array<T, N, Backend>(node);
 }
 
-template <class T> array<T, 2> diag(const array<T, 1>& v) {
+template <class T, ComputeBackend Backend> array<T, 2, Backend> diag(const array<T, 1, Backend>& v) {
   int64_t n = v.shape()[0];
   std::vector<std::byte> imm(sizeof(float) * 2);
   float p0 = static_cast<float>(n);
   float p1 = 0.0f;
   std::memcpy(imm.data(), &p0, sizeof(float));
   std::memcpy(imm.data() + sizeof(float), &p1, sizeof(float));
-  auto node = make_node(OpType::Diag, Shape{n, n}, v.dtype(), {v.node()}, imm);
-  return array<T, 2>(node);
+  auto node = make_node<Backend>(OpType::Diag, Shape{n, n}, v.dtype(), {v.node()}, imm);
+  return array<T, 2, Backend>(node);
 }
 
-template <class T> array<T, 2> tril(const array<T, 2>& a) {
+template <class T, ComputeBackend Backend> array<T, 2, Backend> tril(const array<T, 2, Backend>& a) {
   std::vector<std::byte> imm(sizeof(float) * 2);
   float p0 = static_cast<float>(a.shape()[1]);
   float p1 = 0.0f;
   std::memcpy(imm.data(), &p0, sizeof(float));
   std::memcpy(imm.data() + sizeof(float), &p1, sizeof(float));
-  auto node = make_node(OpType::Tril, a.shape(), a.dtype(), {a.node()}, imm);
-  return array<T, 2>(node);
+  auto node = make_node<Backend>(OpType::Tril, a.shape(), a.dtype(), {a.node()}, imm);
+  return array<T, 2, Backend>(node);
 }
 
-template <class T> array<T, 2> triu(const array<T, 2>& a) {
+template <class T, ComputeBackend Backend> array<T, 2, Backend> triu(const array<T, 2, Backend>& a) {
   std::vector<std::byte> imm(sizeof(float) * 2);
   float p0 = static_cast<float>(a.shape()[1]);
   float p1 = 0.0f;
   std::memcpy(imm.data(), &p0, sizeof(float));
   std::memcpy(imm.data() + sizeof(float), &p1, sizeof(float));
-  auto node = make_node(OpType::Triu, a.shape(), a.dtype(), {a.node()}, imm);
-  return array<T, 2>(node);
+  auto node = make_node<Backend>(OpType::Triu, a.shape(), a.dtype(), {a.node()}, imm);
+  return array<T, 2, Backend>(node);
 }
 
-template <class T, size_t N> array<T, N> copy(const array<T, N>& a) { return array<T, N>(make_node(OpType::Copy, a.shape(), a.dtype(), {a.node()})); }
+template <class T, size_t N, ComputeBackend Backend> array<T, N, Backend> copy(const array<T, N, Backend>& a) { return array<T, N, Backend>(make_node<Backend>(OpType::Copy, a.shape(), a.dtype(), {a.node()})); }
 
 } // namespace mkx

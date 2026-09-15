@@ -25,10 +25,10 @@ TEST_CASE("eval: Vulkan実機でaddを実行しCPUへ読み出せる") {
   auto b = mkx::ones<float, 1>({4});
   auto c = mkx::add(a, b);
 
-  mkx::eval<VulkanBackend>(c);
+  mkx::eval(c);
   CHECK(c.node()->evaluated);
 
-  auto v = c.to_vector<VulkanBackend>();
+  auto v = c.to_vector();
   REQUIRE(v.size() == 4);
   for(auto x : v) CHECK(x == doctest::Approx(1.0f));
 }

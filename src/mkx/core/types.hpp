@@ -13,14 +13,6 @@ inline constexpr Dtype bool_   = Dtype::Bool;
 
 using Shape = std::vector<int64_t>;
 
-enum class DeviceTag { Vulkan, OpenCL, Cuda };
-
-namespace backend {
-inline constexpr DeviceTag vulkan = DeviceTag::Vulkan;
-inline constexpr DeviceTag opencl = DeviceTag::OpenCL;
-inline constexpr DeviceTag cuda   = DeviceTag::Cuda;
-} // namespace backend
-
 inline int64_t shape_size(const Shape& shape) {
   int64_t n = 1;
   for(auto d : shape) n *= d;

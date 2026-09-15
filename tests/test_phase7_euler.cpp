@@ -11,24 +11,14 @@
 
 using mkx::VulkanBackend;
 
-namespace {
-mkx::array<float, 1> make1(std::vector<float> data) {
-  auto a = mkx::zeros<float, 1>({static_cast<int64_t>(data.size())});
-  mkx::eval<VulkanBackend>(a);
-  auto* buf = static_cast<VulkanBackend::Buffer*>(a.node()->gpu_buffer);
-  VulkanBackend::upload(buf, data.data(), data.size() * sizeof(float));
-  return a;
-}
-} // namespace
-
 TEST_CASE("euler kernel: nv=1の単純joint1本で半陰的Euler積分を1ステップ実行する") {
   // 1自由度(simple joint, qa=0, da=0), 質量4.0, 減衰なし
   float dt             = 0.01f;
-  auto qM              = make1({4.0f});
-  auto qfrc_smooth     = make1({1.0f});
-  auto qfrc_constraint = make1({0.0f});
-  auto qvel_in         = make1({0.5f});
-  auto qpos_in         = make1({0.2f});
+  auto qM              = mkx::array<float, 1>::array1f({4.0f}, mkx::Shape{});
+  auto qfrc_smooth     = mkx::array<float, 1>::array1f({1.0f}, mkx::Shape{});
+  auto qfrc_constraint = mkx::array<float, 1>::array1f({0.0f}, mkx::Shape{});
+  auto qvel_in         = mkx::array<float, 1>::array1f({0.5f}, mkx::Shape{});
+  auto qpos_in         = mkx::array<float, 1>::array1f({0.2f}, mkx::Shape{});
 
   auto kernel = mkx::mujoco::make_euler_kernel(
     /*nv=*/1, /*nq=*/1, dt,
@@ -39,10 +29,10 @@ TEST_CASE("euler kernel: nv=1の単純joint1本で半陰的Euler積分を1ステ
   auto outputs = kernel({qM, qfrc_smooth, qfrc_constraint, qvel_in, qpos_in}, {mkx::Shape{1}, mkx::Shape{1}, mkx::Shape{1}}, {1, 1, 1}, {1, 1, 1});
   REQUIRE(outputs.size() == 3);
 
-  mkx::eval<VulkanBackend>(outputs[0], outputs[1], outputs[2]);
-  auto qpos_out = outputs[0].to_vector<VulkanBackend>();
-  auto qvel_out = outputs[1].to_vector<VulkanBackend>();
-  auto qacc_out = outputs[2].to_vector<VulkanBackend>();
+  mkx::eval(outputs[0], outputs[1], outputs[2]);
+  auto qpos_out = outputs[0].to_vector();
+  auto qvel_out = outputs[1].to_vector();
+  auto qacc_out = outputs[2].to_vector();
 
   REQUIRE(qpos_out.size() == 1);
   REQUIRE(qvel_out.size() == 1);

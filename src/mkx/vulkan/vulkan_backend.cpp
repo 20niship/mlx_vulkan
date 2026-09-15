@@ -9,11 +9,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unistd.h>
 #include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace mkx {
@@ -41,6 +44,7 @@ struct Context {
 #ifdef MKX_USE_VMA
   VmaAllocator allocator = VK_NULL_HANDLE;
 #endif
+  std::unordered_set<VulkanBackend::Buffer*> persistent_bufs;
 
   Context() {
     VkApplicationInfo app_info{VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -179,6 +183,17 @@ struct Context {
   ~Context() {
     if(device == VK_NULL_HANDLE) return;
     vkDeviceWaitIdle(device);
+    // release_persistent_for_ownerを呼び忘れたまま残ったバッファの安全網。
+    for(auto* buf : persistent_bufs) {
+#ifdef MKX_USE_VMA
+      vmaDestroyBuffer(allocator, buf->buffer, buf->allocation);
+#else
+      vkDestroyBuffer(device, buf->buffer, nullptr);
+      vkFreeMemory(device, buf->memory, nullptr);
+#endif
+      delete buf;
+    }
+    persistent_bufs.clear();
 #ifdef MKX_USE_VMA
     if(allocator) vmaDestroyAllocator(allocator);
 #endif
@@ -347,6 +362,13 @@ std::unordered_map<size_t, std::vector<VulkanBackend::Buffer*>>& free_list() {
   return pool;
 }
 
+// free()単体でwait_idle()しない: 破棄/プール返却は次のwait_idle()(vkDeviceWaitIdle後で安全)にまとめて遅延する。
+std::vector<VulkanBackend::Buffer*>& pending_frees() {
+  static std::vector<VulkanBackend::Buffer*> q;
+  return q;
+}
+void free_now(VulkanBackend::Buffer* buf);
+
 #ifdef MKX_USE_VMA
 
 // VMAが自前でブロック単位に再利用するため、kMaxPooledPerSize/kMaxPooledTotalの自作プールは不要(free()は素直にvmaDestroyBuffer)。
@@ -373,7 +395,10 @@ VulkanBackend::Buffer* VulkanBackend::alloc(size_t nbytes) {
 
 void VulkanBackend::free(Buffer* buf) {
   if(!buf) return;
-  wait_idle();
+  pending_frees().push_back(buf);
+}
+
+void free_now(VulkanBackend::Buffer* buf) {
   vmaDestroyBuffer(ctx().allocator, buf->buffer, buf->allocation);
   delete buf;
 }
@@ -450,8 +475,10 @@ VulkanBackend::Buffer* VulkanBackend::alloc(size_t nbytes) {
 
 void VulkanBackend::free(Buffer* buf) {
   if(!buf) return;
-  // A pending batch may still hold a dispatch that reads/writes buf; pooling/destroying it now would let alloc() hand the same memory to a new buffer while that GPU work is still in flight (VK_ERROR_MEMORY_MAP_FAILED). Flush+wait first so it's safe to reuse.
-  wait_idle();
+  pending_frees().push_back(buf);
+}
+
+void free_now(VulkanBackend::Buffer* buf) {
   auto& pool = free_list();
   auto& slot = pool[buf->size];
   if(slot.size() < kMaxPooledPerSize && g_pooled_total < kMaxPooledTotal) {
@@ -582,6 +609,82 @@ void VulkanBackend::dispatch(Pipeline& pipeline, std::span<Buffer*> buffers, std
 void VulkanBackend::wait_idle() {
   flush_batch();
   vkDeviceWaitIdle(ctx().device);
+  auto& q = pending_frees();
+  for(auto* buf : q) free_now(buf);
+  q.clear();
+}
+
+namespace {
+
+std::unordered_map<const void*, VulkanBackend::Buffer*>& transient_map() {
+  static std::unordered_map<const void*, VulkanBackend::Buffer*> m;
+  return m;
+}
+
+struct PersistentKeyHash {
+  size_t operator()(const std::pair<uint64_t, const void*>& k) const { return std::hash<uint64_t>{}(k.first) ^ (std::hash<const void*>{}(k.second) << 1); }
+};
+
+std::unordered_map<std::pair<uint64_t, const void*>, VulkanBackend::Buffer*, PersistentKeyHash>& permanent_map() {
+  static std::unordered_map<std::pair<uint64_t, const void*>, VulkanBackend::Buffer*, PersistentKeyHash> m;
+  return m;
+}
+
+} // namespace
+
+VulkanBackend::Buffer* VulkanBackend::get_or_allocate(const OpNode<VulkanBackend>* node, size_t nbytes) {
+  if(node->is_permanent) {
+    auto& pmap = permanent_map();
+    auto key   = std::make_pair(node->persistent_loc_id, node->persistent_owner);
+    auto it    = pmap.find(key);
+    if(it != pmap.end()) {
+      if(it->second->size == nbytes) return it->second;
+      // 実shapeが変わった(衝突contact数の変動等)ので古いバッファを解放し新サイズで作り直す。
+      ctx().persistent_bufs.erase(it->second);
+      free(it->second);
+      auto* resized = alloc(nbytes);
+      ctx().persistent_bufs.insert(resized);
+      it->second = resized;
+      return resized;
+    }
+    auto* buf = alloc(nbytes);
+    ctx().persistent_bufs.insert(buf); // 呼び忘れ安全網(~Context参照)への登録
+    pmap.emplace(key, buf);
+    return buf;
+  }
+  auto& tmap = transient_map();
+  auto it    = tmap.find(node);
+  if(it != tmap.end()) return it->second;
+  auto* buf = alloc(nbytes);
+  tmap.emplace(node, buf);
+  return buf;
+}
+
+bool VulkanBackend::has_buffer(const OpNode<VulkanBackend>* node) {
+  if(node->is_permanent) return permanent_map().count(std::make_pair(node->persistent_loc_id, node->persistent_owner)) > 0;
+  return transient_map().count(node) > 0;
+}
+
+void VulkanBackend::release_node(const OpNode<VulkanBackend>* node) {
+  if(node->is_permanent) return; // permanentの解放はrelease_persistent_for_ownerに一任
+  auto& tmap = transient_map();
+  auto it    = tmap.find(node);
+  if(it == tmap.end()) return;
+  free(it->second);
+  tmap.erase(it);
+}
+
+void VulkanBackend::release_persistent_for_owner(const void* owner) {
+  auto& pmap = permanent_map();
+  for(auto it = pmap.begin(); it != pmap.end();) {
+    if(it->first.second == owner) {
+      ctx().persistent_bufs.erase(it->second);
+      free(it->second);
+      it = pmap.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 } // namespace mkx
