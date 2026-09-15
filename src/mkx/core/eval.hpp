@@ -103,28 +103,46 @@ template <class Backend> struct FusionPlan {
   std::unordered_set<OpNode<Backend>*> materialized;
 };
 
+// Sum/ReduceMax(全体リダクション)のみ末尾吸収の対象(ArgMax/ArgMinはindex追跡が要るため対象外)。
+inline bool fuse_reduce_absorbable(OpType t) { return t == OpType::Sum || t == OpType::ReduceMax; }
+
 template <class Backend> FusionPlan<Backend> build_fusion_plan(const std::vector<NodePtr<Backend>>& order, const std::unordered_set<OpNode<Backend>*>& roots) {
   std::unordered_map<OpNode<Backend>*, size_t> cluster_of;
   std::vector<std::vector<NodePtr<Backend>>> clusters;
+  std::vector<bool> cluster_sealed; // Reduceを吸収済みのクラスタはこれ以上吸収しない(出力shapeが変わるため)
   bool any_fusion = false; // 実際に2ノード以上が同一クラスタへ吸収されたか
 
   for(auto& np : order) {
     OpNode<Backend>* n = np.get();
+    if(fuse_reduce_absorbable(n->type)) {
+      // producerの要素単位チェーンをリダクションのepilogueとしてそのまま吸収し、中間バッファの materialize + 別dispatchを省く。
+      OpNode<Backend>* p0 = n->inputs.empty() ? nullptr : n->inputs[0].get();
+      auto it             = p0 ? cluster_of.find(p0) : cluster_of.end();
+      if(p0 && it != cluster_of.end() && !cluster_sealed[it->second]) {
+        clusters[it->second].push_back(np);
+        cluster_of[n]                = it->second;
+        cluster_sealed[it->second]   = true;
+        any_fusion                   = true;
+      }
+      continue;
+    }
     if(!fuse_is_fusable(n->type)) continue;
     if(shader_group_for(n->type) == ShaderGroup::Gather) {
       // Gatherは自スレッドのiと異なるindexで入力を読むため入力は常に実バッファである必要がある。吸収せず新規クラスタを開始する。
       clusters.push_back({np});
+      cluster_sealed.push_back(false);
       cluster_of[n] = clusters.size() - 1;
       continue;
     }
     OpNode<Backend>* p0 = n->inputs.empty() ? nullptr : n->inputs[0].get();
     auto it             = p0 ? cluster_of.find(p0) : cluster_of.end();
-    if(p0 && it != cluster_of.end()) {
+    if(p0 && it != cluster_of.end() && !cluster_sealed[it->second]) {
       clusters[it->second].push_back(np);
       cluster_of[n] = it->second;
       any_fusion    = true;
     } else {
       clusters.push_back({np});
+      cluster_sealed.push_back(false);
       cluster_of[n] = clusters.size() - 1;
     }
   }
@@ -245,6 +263,9 @@ template <class Backend> void eval_fused_cluster(const std::vector<NodePtr<Backe
   }
 
   int64_t count = shape_size(members[0]->shape);
+  // 末尾がSum/ReduceMax(全体リダクション)ならepilogueとして吸収されたクラスタ: producerチェーンをgrid-strideループの中で評価しworkgroup内tree-reduceする(中間バッファへの書き出し・別dispatchを省く)。
+  bool reduce_terminal = shader_group_for(members.back()->type) == ShaderGroup::Reduce;
+  size_t chain_len      = reduce_terminal ? members.size() - 1 : members.size();
 
   std::string src = "#version 450\nlayout(local_size_x = 256) in;\n";
   for(size_t k = 0; k < ext_inputs.size(); k++) {
@@ -254,7 +275,7 @@ template <class Backend> void eval_fused_cluster(const std::vector<NodePtr<Backe
     size_t b = ext_inputs.size() + k;
     src += "layout(std430, binding = " + std::to_string(b) + ") writeonly buffer FOUT" + std::to_string(k) + " { float out" + std::to_string(k) + "[]; };\n";
   }
-  src += "void main() {\n  uint i = gl_GlobalInvocationID.x;\n  if (i >= " + std::to_string(count) + "u) return;\n";
+  if(reduce_terminal) src += "shared float sdata[256];\n";
 
   auto ref = [&](OpNode<Backend>* n) -> std::string {
     auto it = local_idx.find(n);
@@ -262,34 +283,57 @@ template <class Backend> void eval_fused_cluster(const std::vector<NodePtr<Backe
     return "in" + std::to_string(ext_idx.at(n)) + "[i]";
   };
 
-  for(size_t idx = 0; idx < members.size(); idx++) {
-    OpNode<Backend>* n = members[idx].get();
-    std::string vname  = "v" + std::to_string(idx);
-    if(shader_group_for(n->type) == ShaderGroup::Gather) {
-      Push pc             = build_push(*n);
-      std::string extname = "in" + std::to_string(ext_idx.at(n->inputs[0].get()));
-      std::string sfx     = std::to_string(idx);
-      src += "  float " + vname + ";\n  {\n";
-      src += "    uint out_shape_" + sfx + "[4] = uint[4](" + std::to_string(pc.out_shape[0]) + "u," + std::to_string(pc.out_shape[1]) + "u," + std::to_string(pc.out_shape[2]) + "u," + std::to_string(pc.out_shape[3]) + "u);\n";
-      src += "    uint in_shape_" + sfx + "[4] = uint[4](" + std::to_string(pc.in_shape[0]) + "u," + std::to_string(pc.in_shape[1]) + "u," + std::to_string(pc.in_shape[2]) + "u," + std::to_string(pc.in_shape[3]) + "u);\n";
-      src += "    uint in_strides_" + sfx + "[4] = uint[4](" + std::to_string(pc.in_strides[0]) + "u," + std::to_string(pc.in_strides[1]) + "u," + std::to_string(pc.in_strides[2]) + "u," + std::to_string(pc.in_strides[3]) + "u);\n";
-      src += "    uint remaining = i;\n    uint in_index = " + std::to_string(pc.in_base_offset) + "u;\n";
-      src += "    for (int d = " + std::to_string(static_cast<int>(pc.ndim) - 1) + "; d >= 0; --d) {\n";
-      src += "      uint dim_size = out_shape_" + sfx + "[d];\n      uint comp = remaining % dim_size;\n      remaining /= dim_size;\n";
-      src += "      uint src_comp = comp % in_shape_" + sfx + "[d];\n      in_index += src_comp * in_strides_" + sfx + "[d];\n    }\n";
-      src += "    " + vname + " = " + extname + "[in_index];\n  }\n";
-    } else {
-      std::vector<std::string> args;
-      args.reserve(n->inputs.size());
-      for(auto& in : n->inputs) args.push_back(ref(in.get()));
-      src += "  float " + vname + " = " + fuse_scalar_expr(n->type, args) + ";\n";
+  auto emit_chain = [&](std::string& out_src) {
+    for(size_t idx = 0; idx < chain_len; idx++) {
+      OpNode<Backend>* n = members[idx].get();
+      std::string vname  = "v" + std::to_string(idx);
+      if(shader_group_for(n->type) == ShaderGroup::Gather) {
+        Push pc             = build_push(*n);
+        std::string extname = "in" + std::to_string(ext_idx.at(n->inputs[0].get()));
+        std::string sfx     = std::to_string(idx);
+        out_src += "  float " + vname + ";\n  {\n";
+        out_src += "    uint out_shape_" + sfx + "[4] = uint[4](" + std::to_string(pc.out_shape[0]) + "u," + std::to_string(pc.out_shape[1]) + "u," + std::to_string(pc.out_shape[2]) + "u," + std::to_string(pc.out_shape[3]) + "u);\n";
+        out_src += "    uint in_shape_" + sfx + "[4] = uint[4](" + std::to_string(pc.in_shape[0]) + "u," + std::to_string(pc.in_shape[1]) + "u," + std::to_string(pc.in_shape[2]) + "u," + std::to_string(pc.in_shape[3]) + "u);\n";
+        out_src += "    uint in_strides_" + sfx + "[4] = uint[4](" + std::to_string(pc.in_strides[0]) + "u," + std::to_string(pc.in_strides[1]) + "u," + std::to_string(pc.in_strides[2]) + "u," + std::to_string(pc.in_strides[3]) + "u);\n";
+        out_src += "    uint remaining = i;\n    uint in_index = " + std::to_string(pc.in_base_offset) + "u;\n";
+        out_src += "    for (int d = " + std::to_string(static_cast<int>(pc.ndim) - 1) + "; d >= 0; --d) {\n";
+        out_src += "      uint dim_size = out_shape_" + sfx + "[d];\n      uint comp = remaining % dim_size;\n      remaining /= dim_size;\n";
+        out_src += "      uint src_comp = comp % in_shape_" + sfx + "[d];\n      in_index += src_comp * in_strides_" + sfx + "[d];\n    }\n";
+        out_src += "    " + vname + " = " + extname + "[in_index];\n  }\n";
+      } else {
+        std::vector<std::string> args;
+        args.reserve(n->inputs.size());
+        for(auto& in : n->inputs) args.push_back(ref(in.get()));
+        out_src += "  float " + vname + " = " + fuse_scalar_expr(n->type, args) + ";\n";
+      }
+      auto oit = out_slot.find(n);
+      if(oit != out_slot.end()) {
+        out_src += "  out" + std::to_string(oit->second) + "[i] = " + vname + ";\n";
+      }
     }
-    auto oit = out_slot.find(n);
-    if(oit != out_slot.end()) {
-      src += "  out" + std::to_string(oit->second) + "[i] = " + vname + ";\n";
-    }
+  };
+
+  if(!reduce_terminal) {
+    src += "void main() {\n  uint i = gl_GlobalInvocationID.x;\n  if (i >= " + std::to_string(count) + "u) return;\n";
+    emit_chain(src);
+    src += "}\n";
+  } else {
+    OpNode<Backend>* rn = members.back().get();
+    bool is_max         = rn->type == OpType::ReduceMax;
+    std::string init     = is_max ? "-3.402823e38" : "0.0";
+    std::string combine  = is_max ? ("sdata[tid] = max(sdata[tid], sdata[tid + s]);") : ("sdata[tid] += sdata[tid + s];");
+    src += "void main() {\n  uint tid = gl_LocalInvocationID.x;\n  uint n = " + std::to_string(count) + "u;\n";
+    src += "  float acc = " + init + ";\n";
+    src += "  for (uint i = tid; i < n; i += 256u) {\n";
+    emit_chain(src);
+    std::string reduce_operand = ref(rn->inputs[0].get());
+    src += is_max ? ("    acc = max(acc, " + reduce_operand + ");\n") : ("    acc += " + reduce_operand + ";\n");
+    src += "  }\n  sdata[tid] = acc;\n  barrier();\n";
+    src += "  for (uint s = 128u; s > 0u; s >>= 1u) {\n    if (tid < s) { " + combine + " }\n    barrier();\n  }\n";
+    auto oit = out_slot.find(rn);
+    src += "  if (tid == 0u) out" + std::to_string(oit->second) + "[0] = sdata[0];\n";
+    src += "}\n";
   }
-  src += "}\n";
 
   size_t hash = std::hash<std::string>{}(src);
   auto pit    = cache.find(hash);
