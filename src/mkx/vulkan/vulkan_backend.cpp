@@ -10,6 +10,7 @@
 #include <cstring>
 #include <fstream>
 #include <functional>
+#include <list>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -230,6 +231,68 @@ struct Batch {
 Batch& batch() {
   static Batch b;
   return b;
+}
+
+// 永続バッファはstep間でBuffer*が同一のまま渡されるため(pipeline,buffer列)キーでdescriptor setをLRUキャッシュし再作成を省く。transientはmiss前提でno-op相当。
+struct DescCache {
+  static constexpr uint32_t kCapacity = 2048;
+  VkDescriptorPool pool               = VK_NULL_HANDLE;
+  std::unordered_map<uint64_t, VkDescriptorSet> map;
+  std::list<uint64_t> lru; // front=most recently used
+  std::unordered_map<uint64_t, std::list<uint64_t>::iterator> lru_pos;
+};
+
+DescCache& desc_cache() {
+  static DescCache dc;
+  return dc;
+}
+
+void ensure_desc_cache_pool() {
+  auto& dc = desc_cache();
+  if(dc.pool != VK_NULL_HANDLE) return;
+  auto& c = ctx();
+  VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, DescCache::kCapacity * 8};
+  VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+  pool_info.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+  pool_info.maxSets       = DescCache::kCapacity;
+  pool_info.poolSizeCount = 1;
+  pool_info.pPoolSizes    = &pool_size;
+  vkCreateDescriptorPool(c.device, &pool_info, nullptr, &dc.pool);
+}
+
+uint64_t hash_dispatch_key(VkPipeline pipeline, std::span<VulkanBackend::Buffer*> buffers) {
+  uint64_t h = std::hash<void*>{}(reinterpret_cast<void*>(pipeline));
+  for(auto* b : buffers) {
+    h ^= std::hash<void*>{}(b) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+  }
+  return h;
+}
+
+// キャッシュヒット時はVkDescriptorSetを返す。ミス時はnullptrを返す(呼び出し側が新規作成しcache_insertでここへ登録する)。
+VkDescriptorSet desc_cache_lookup(uint64_t key) {
+  auto& dc = desc_cache();
+  auto it  = dc.map.find(key);
+  if(it == dc.map.end()) return VK_NULL_HANDLE;
+  dc.lru.erase(dc.lru_pos.at(key));
+  dc.lru.push_front(key);
+  dc.lru_pos[key] = dc.lru.begin();
+  return it->second;
+}
+
+void desc_cache_insert(uint64_t key, VkDescriptorSet set) {
+  auto& c  = ctx();
+  auto& dc = desc_cache();
+  if(dc.map.size() >= DescCache::kCapacity) {
+    uint64_t evict_key = dc.lru.back();
+    dc.lru.pop_back();
+    dc.lru_pos.erase(evict_key);
+    VkDescriptorSet evict_set = dc.map.at(evict_key);
+    dc.map.erase(evict_key);
+    vkFreeDescriptorSets(c.device, dc.pool, 1, &evict_set);
+  }
+  dc.map[key] = set;
+  dc.lru.push_front(key);
+  dc.lru_pos[key] = dc.lru.begin();
 }
 
 void flush_batch() {
@@ -545,49 +608,51 @@ void VulkanBackend::dispatch(Pipeline& pipeline, std::span<Buffer*> buffers, std
     b.has_prior_dispatch = false;
   }
 
-  if(b.current_pool == VK_NULL_HANDLE || b.current_pool_sets_used >= Batch::kPoolSetCapacity) {
-    VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, Batch::kPoolBindingCapacity};
-    VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool_info.maxSets       = Batch::kPoolSetCapacity;
-    pool_info.poolSizeCount = 1;
-    pool_info.pPoolSizes    = &pool_size;
-    vkCreateDescriptorPool(c.device, &pool_info, nullptr, &b.current_pool);
-    b.pending_desc_pools.push_back(b.current_pool);
-    b.current_pool_sets_used = 0;
-  }
+  uint64_t desc_key        = hash_dispatch_key(pipeline.pipeline, buffers);
+  VkDescriptorSet desc_set = desc_cache_lookup(desc_key);
+  if(desc_set == VK_NULL_HANDLE) {
+    if(b.current_pool == VK_NULL_HANDLE || b.current_pool_sets_used >= Batch::kPoolSetCapacity) {
+      VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, Batch::kPoolBindingCapacity};
+      VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+      pool_info.maxSets       = Batch::kPoolSetCapacity;
+      pool_info.poolSizeCount = 1;
+      pool_info.pPoolSizes    = &pool_size;
+      vkCreateDescriptorPool(c.device, &pool_info, nullptr, &b.current_pool);
+      b.pending_desc_pools.push_back(b.current_pool);
+      b.current_pool_sets_used = 0;
+    }
 
-  VkDescriptorSetAllocateInfo set_alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-  set_alloc.descriptorPool     = b.current_pool;
-  set_alloc.descriptorSetCount = 1;
-  set_alloc.pSetLayouts        = &pipeline.set_layout;
-  VkDescriptorSet desc_set;
-  if(vkAllocateDescriptorSets(c.device, &set_alloc, &desc_set) != VK_SUCCESS) {
-    // Pool ran out of binding budget before its set-count budget (large pipelines); start a fresh pool.
-    VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, Batch::kPoolBindingCapacity};
-    VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool_info.maxSets       = Batch::kPoolSetCapacity;
-    pool_info.poolSizeCount = 1;
-    pool_info.pPoolSizes    = &pool_size;
-    vkCreateDescriptorPool(c.device, &pool_info, nullptr, &b.current_pool);
-    b.pending_desc_pools.push_back(b.current_pool);
-    b.current_pool_sets_used = 0;
-    set_alloc.descriptorPool = b.current_pool;
-    vkAllocateDescriptorSets(c.device, &set_alloc, &desc_set);
-  }
-  b.current_pool_sets_used++;
+    ensure_desc_cache_pool();
+    auto& dc = desc_cache();
+    VkDescriptorSetAllocateInfo cache_alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    cache_alloc.descriptorPool     = dc.pool;
+    cache_alloc.descriptorSetCount = 1;
+    cache_alloc.pSetLayouts        = &pipeline.set_layout;
+    if(vkAllocateDescriptorSets(c.device, &cache_alloc, &desc_set) != VK_SUCCESS) {
+      // 永続pool枯渇(想定外の多様な組み合わせ)。このdispatchだけbatch局所poolへフォールバック、キャッシュには載せない。
+      VkDescriptorSetAllocateInfo set_alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+      set_alloc.descriptorPool     = b.current_pool;
+      set_alloc.descriptorSetCount = 1;
+      set_alloc.pSetLayouts        = &pipeline.set_layout;
+      vkAllocateDescriptorSets(c.device, &set_alloc, &desc_set);
+      b.current_pool_sets_used++;
+      desc_key = 0; // insertしない印
+    }
 
-  std::vector<VkDescriptorBufferInfo> buffer_infos(buffers.size());
-  std::vector<VkWriteDescriptorSet> writes(buffers.size());
-  for(size_t i = 0; i < buffers.size(); ++i) {
-    buffer_infos[i]           = {buffers[i]->buffer, 0, VK_WHOLE_SIZE};
-    writes[i]                 = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    writes[i].dstSet          = desc_set;
-    writes[i].dstBinding      = static_cast<uint32_t>(i);
-    writes[i].descriptorCount = 1;
-    writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[i].pBufferInfo     = &buffer_infos[i];
+    std::vector<VkDescriptorBufferInfo> buffer_infos(buffers.size());
+    std::vector<VkWriteDescriptorSet> writes(buffers.size());
+    for(size_t i = 0; i < buffers.size(); ++i) {
+      buffer_infos[i]           = {buffers[i]->buffer, 0, VK_WHOLE_SIZE};
+      writes[i]                 = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+      writes[i].dstSet          = desc_set;
+      writes[i].dstBinding      = static_cast<uint32_t>(i);
+      writes[i].descriptorCount = 1;
+      writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      writes[i].pBufferInfo     = &buffer_infos[i];
+    }
+    vkUpdateDescriptorSets(c.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    if(desc_key != 0) desc_cache_insert(desc_key, desc_set);
   }
-  vkUpdateDescriptorSets(c.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
   // Chained dispatches commonly read a prior dispatch's output via the same storage buffers; a full shader-write/read barrier avoids per-dispatch buffer-aliasing analysis.
   if(b.has_prior_dispatch) {
