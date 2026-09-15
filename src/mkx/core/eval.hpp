@@ -479,4 +479,21 @@ template <ComputeBackend Backend = VulkanBackend> void eval_nodes(const std::vec
   Backend::wait_idle();
 }
 
+// 2回目以降はbuilderを呼ばずBackend::replay(key)のみで再実行する。builderの返すNodePtrは永続バッファ限定(transientだと記録済みcommand bufferが解放済みバッファを参照し不正になる)。
+template <ComputeBackend Backend = VulkanBackend> const std::vector<NodePtr<Backend>>& eval_cached(const void* key, const std::function<std::vector<NodePtr<Backend>>()>& builder) {
+  // 意図的にリーク(new、未delete): 翻訳単位をまたぐ静的破棄順は未規定で、先に破棄されるとVulkan ctx()破棄後にrelease_node()が呼ばれクラッシュする。
+  static auto& roots_cache = *new std::unordered_map<const void*, std::vector<NodePtr<Backend>>>();
+  if(Backend::has_replay(key)) {
+    Backend::replay(key);
+    return roots_cache.at(key);
+  }
+  Backend::begin_replay(key);
+  auto roots = builder();
+  eval_nodes<Backend>(roots);
+  Backend::end_replay(key);
+  auto& stored = roots_cache[key];
+  stored       = std::move(roots);
+  return stored;
+}
+
 } // namespace mkx

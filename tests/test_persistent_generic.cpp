@@ -6,6 +6,7 @@
 #include <mkx/core/eval.hpp>
 #include <mkx/core/op_node.hpp>
 #include <mkx/ops/elementwise.hpp>
+#include <mkx/ops/linalg.hpp>
 #include <mkx/vulkan/vulkan_backend.hpp>
 
 using mkx::VulkanBackend;
@@ -54,5 +55,38 @@ TEST_CASE("is_permanent: 通常の二項演算ノードも複数iterationで同�
     }
   }
 
+  VulkanBackend::release_persistent_for_owner(owner);
+}
+
+TEST_CASE("eval_cached: 2回目以降はbuilderを呼ばずreplayのみで最新のバッファ内容を反映する") {
+  int owner_token;
+  const void* owner = &owner_token;
+  const int n       = 8;
+
+  auto a = persistent_input(owner, mkx::persistent_location_hash(__FILE__, __LINE__), std::vector<float>(n, 1.0f));
+  auto b = persistent_input(owner, mkx::persistent_location_hash(__FILE__, __LINE__), std::vector<float>(n, 2.0f));
+
+  int build_calls = 0;
+  auto build      = [&]() -> std::vector<mkx::NodePtr<VulkanBackend>> {
+    build_calls++;
+    auto s = mkx::sum(mkx::multiply(a, b));
+    mkx::mark_permanent<VulkanBackend>(s.node(), mkx::persistent_location_hash(__FILE__, __LINE__), owner);
+    return {s.node()};
+  };
+
+  auto roots1 = mkx::eval_cached<VulkanBackend>(owner, build);
+  mkx::array<float, 1> s1(roots1[0]);
+  CHECK(s1.to_vector()[0] == doctest::Approx(16.0f)); // 1*2*8
+  CHECK(build_calls == 1);
+  CHECK(VulkanBackend::has_replay(owner));
+
+  std::vector<float> a_new(n, 3.0f);
+  VulkanBackend::upload(VulkanBackend::get_or_allocate(a.node().get(), n * sizeof(float)), a_new.data(), n * sizeof(float));
+  auto roots2 = mkx::eval_cached<VulkanBackend>(owner, build);
+  mkx::array<float, 1> s2(roots2[0]);
+  CHECK(s2.to_vector()[0] == doctest::Approx(48.0f)); // 3*2*8
+  CHECK(build_calls == 1);                            // builderは呼ばれていない(replayのみ)
+
+  VulkanBackend::invalidate_replay(owner);
   VulkanBackend::release_persistent_for_owner(owner);
 }
