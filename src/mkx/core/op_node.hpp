@@ -82,19 +82,19 @@ enum class OpType {
 
 // dispatch時にどのGLSLテンプレート群を使うかの分類。
 enum class ShaderGroup {
-  View,        // shader不要、入力のバッファをそのまま共有する
-  Creation,    // 入力0、出力のみ
-  Unary,       // 入力1、同一index参照 (Diag/Tril/Triu/Copyも同一テンプレートに同居)
-  Binary,      // 入力2、同一index参照
-  Ternary,     // 入力3、同一index参照
-  Gather,      // 入力1、出力indexから入力indexへアフィン+modulo写像 (Transpose/Slice/Tile/BroadcastTo)
-  Concat,      // 入力2、axis位置で入力を切り替え (Concatenate/Stack)
-  Take,        // 入力2 (data, indices)、axis方向のgather
-  Reduce,      // 入力1、単一work-group内リダクション (Sum/ReduceMax/ArgMax/ArgMin, 全体リダクション)
-  ReduceAxis,  // 入力1、出力要素ごとに1 work-groupを割り当てる軸指定リダクション (SumAxis/ReduceMaxAxis)
-  MatMul,      // 入力2、タイル化GEMM
-  LinalgSeq,   // Cholesky(入力1)/SolveTriangular(入力2): バッチ要素1個=1スレッドで逐次アルゴリズムをGPU実行
-  Custom,      // CustomKernel所有者: 完全自前のGLSLソース+可変長入出力
+  View,       // shader不要、入力のバッファをそのまま共有する
+  Creation,   // 入力0、出力のみ
+  Unary,      // 入力1、同一index参照 (Diag/Tril/Triu/Copyも同一テンプレートに同居)
+  Binary,     // 入力2、同一index参照
+  Ternary,    // 入力3、同一index参照
+  Gather,     // 入力1、出力indexから入力indexへアフィン+modulo写像 (Transpose/Slice/Tile/BroadcastTo)
+  Concat,     // 入力2、axis位置で入力を切り替え (Concatenate/Stack)
+  Take,       // 入力2 (data, indices)、axis方向のgather
+  Reduce,     // 入力1、単一work-group内リダクション (Sum/ReduceMax/ArgMax/ArgMin, 全体リダクション)
+  ReduceAxis, // 入力1、出力要素ごとに1 work-groupを割り当てる軸指定リダクション (SumAxis/ReduceMaxAxis)
+  MatMul,     // 入力2、タイル化GEMM
+  LinalgSeq,  // Cholesky(入力1)/SolveTriangular(入力2): バッチ要素1個=1スレッドで逐次アルゴリズムをGPU実行
+  Custom,     // CustomKernel所有者: 完全自前のGLSLソース+可変長入出力
 };
 
 inline ShaderGroup shader_group_for(OpType t) {

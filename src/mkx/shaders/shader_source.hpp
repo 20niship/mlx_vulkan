@@ -139,7 +139,7 @@ template <class Backend> Push build_push(const OpNode<Backend>& node) {
     case ShaderGroup::LinalgSeq:
       // n/batchはnode.shapeから自明(Cholesky出力{B,n,n}/{n,n}、SolveTriangular出力{B,n}/{n})なのでimm_data不要。
       push.in_base_offset = static_cast<uint32_t>(node.shape.back());
-      push.count           = static_cast<uint32_t>(linalg_seq_batch(node));
+      push.count          = static_cast<uint32_t>(linalg_seq_batch(node));
       break;
     default: break;
   }

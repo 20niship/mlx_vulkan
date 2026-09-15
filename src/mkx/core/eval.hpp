@@ -406,7 +406,7 @@ template <class Backend> void eval_node(OpNode<Backend>& node, std::unordered_ma
   } else {
     dispatch_count = out_count;
   }
-  auto* out              = Backend::get_or_allocate(&node, static_cast<size_t>(out_count) * dtype_size(node.dtype));
+  auto* out = Backend::get_or_allocate(&node, static_cast<size_t>(out_count) * dtype_size(node.dtype));
 
   std::string src = shader_source_for(node.type);
   size_t hash     = std::hash<std::string>{}(src);
