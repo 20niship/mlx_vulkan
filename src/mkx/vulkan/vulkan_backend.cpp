@@ -478,8 +478,14 @@ void VulkanBackend::free(Buffer* buf) {
   pending_frees().push_back(buf);
 }
 
-// 同一VkBuffer/VkDeviceMemoryハンドルの使い回し(free_list pool)はdeferred-free化で衝突検出テストを壊すため無効化。alloc/free churnの本命対策はpool再利用でなくバッファの永続化(MX_MARK_PERSISTENT)側で行う。
 void free_now(VulkanBackend::Buffer* buf) {
+  auto& pool = free_list();
+  auto& slot = pool[buf->size];
+  if(slot.size() < kMaxPooledPerSize && g_pooled_total < kMaxPooledTotal) {
+    slot.push_back(buf);
+    g_pooled_total++;
+    return;
+  }
   auto& c = ctx();
   vkDestroyBuffer(c.device, buf->buffer, nullptr);
   vkFreeMemory(c.device, buf->memory, nullptr);
