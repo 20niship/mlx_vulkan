@@ -657,6 +657,11 @@ void VulkanBackend::replay(const void* key) {
   submit.pCommandBuffers    = &rg.cmd;
   vkQueueSubmit(c.queue, 1, &submit, VK_NULL_HANDLE);
   vkQueueWaitIdle(c.queue);
+
+  // replay()はeval_nodes()/wait_idle()を経由しないため、ここで自前でpending_freesを drain しないと無限に溜まる。
+  auto& q = pending_frees();
+  for(auto* buf : q) free_now(buf);
+  q.clear();
 }
 
 void VulkanBackend::invalidate_replay(const void* key) {
