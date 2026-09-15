@@ -82,19 +82,19 @@ enum class OpType {
 
 // dispatch時にどのGLSLテンプレート群を使うかの分類。
 enum class ShaderGroup {
-  View,        // shader不要、入力のバッファをそのまま共有する
-  Creation,    // 入力0、出力のみ
-  Unary,       // 入力1、同一index参照 (Diag/Tril/Triu/Copyも同一テンプレートに同居)
-  Binary,      // 入力2、同一index参照
-  Ternary,     // 入力3、同一index参照
-  Gather,      // 入力1、出力indexから入力indexへアフィン+modulo写像 (Transpose/Slice/Tile/BroadcastTo)
-  Concat,      // 入力2、axis位置で入力を切り替え (Concatenate/Stack)
-  Take,        // 入力2 (data, indices)、axis方向のgather
-  Reduce,      // 入力1、単一work-group内リダクション (Sum/ReduceMax/ArgMax/ArgMin, 全体リダクション)
-  ReduceAxis,  // 入力1、出力要素ごとに1 work-groupを割り当てる軸指定リダクション (SumAxis/ReduceMaxAxis)
-  MatMul,      // 入力2、タイル化GEMM
-  CpuFallback, // Cholesky/SolveTriangular: GPU→CPU→GPU
-  Custom,      // CustomKernel所有者: 完全自前のGLSLソース+可変長入出力
+  View,       // shader不要、入力のバッファをそのまま共有する
+  Creation,   // 入力0、出力のみ
+  Unary,      // 入力1、同一index参照 (Diag/Tril/Triu/Copyも同一テンプレートに同居)
+  Binary,     // 入力2、同一index参照
+  Ternary,    // 入力3、同一index参照
+  Gather,     // 入力1、出力indexから入力indexへアフィン+modulo写像 (Transpose/Slice/Tile/BroadcastTo)
+  Concat,     // 入力2、axis位置で入力を切り替え (Concatenate/Stack)
+  Take,       // 入力2 (data, indices)、axis方向のgather
+  Reduce,     // 入力1、単一work-group内リダクション (Sum/ReduceMax/ArgMax/ArgMin, 全体リダクション)
+  ReduceAxis, // 入力1、出力要素ごとに1 work-groupを割り当てる軸指定リダクション (SumAxis/ReduceMaxAxis)
+  MatMul,     // 入力2、タイル化GEMM
+  LinalgSeq,  // Cholesky(入力1)/SolveTriangular(入力2): バッチ要素1個=1スレッドで逐次アルゴリズムをGPU実行
+  Custom,     // CustomKernel所有者: 完全自前のGLSLソース+可変長入出力
 };
 
 inline ShaderGroup shader_group_for(OpType t) {
@@ -137,14 +137,14 @@ inline ShaderGroup shader_group_for(OpType t) {
     case OpType::ReduceMaxAxis: return ShaderGroup::ReduceAxis;
     case OpType::MatMul: return ShaderGroup::MatMul;
     case OpType::Cholesky:
-    case OpType::SolveTriangular: return ShaderGroup::CpuFallback;
+    case OpType::SolveTriangular: return ShaderGroup::LinalgSeq;
     case OpType::CustomKernel:
     case OpType::CustomKernelOutput: return ShaderGroup::Custom;
     default: return ShaderGroup::Binary;
   }
 }
 
-// dispatch時にbindするGPU入力バッファの数(View/CpuFallbackは対象外)。
+// dispatch時にbindするGPU入力バッファの数(View対象外)。
 inline int op_arity(OpType t) {
   switch(shader_group_for(t)) {
     case ShaderGroup::View:
@@ -152,13 +152,13 @@ inline int op_arity(OpType t) {
     case ShaderGroup::Unary:
     case ShaderGroup::Gather:
     case ShaderGroup::Reduce:
-    case ShaderGroup::ReduceAxis:
-    case ShaderGroup::CpuFallback: return 1;
+    case ShaderGroup::ReduceAxis: return 1;
     case ShaderGroup::Binary:
     case ShaderGroup::Concat:
     case ShaderGroup::Take:
     case ShaderGroup::MatMul: return 2;
     case ShaderGroup::Ternary: return 3;
+    case ShaderGroup::LinalgSeq: return t == OpType::Cholesky ? 1 : 2;
     case ShaderGroup::Custom: return -1; // eval側で個別処理するため未使用
   }
   return 2;

@@ -324,6 +324,51 @@ void main() {
 }
 )GLSL";
 
+// n×n対称正定値行列Aのコレスキー分解A=L*L^T。逐次依存が強いためバッチ要素(pc.count個)1個=1スレッドで逐次計算する(タイル並列化はせず、Bが並列度を提供する)。
+inline constexpr std::string_view cholesky_glsl = R"GLSL(
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer A { float a[]; };
+layout(std430, binding = 1) buffer OUT { float o[]; };
+void main() {
+    uint e = gl_GlobalInvocationID.x;
+    if (e >= pc.count) return;
+    uint n = pc.in_base_offset;
+    uint base = e * n * n;
+    for (uint i = 0u; i < n; ++i) {
+        for (uint j = 0u; j < n; ++j) {
+            if (j > i) { o[base + i * n + j] = 0.0; continue; }
+            float sum = a[base + i * n + j];
+            for (uint k = 0u; k < j; ++k) sum -= o[base + i * n + k] * o[base + j * n + k];
+            if (i == j) {
+                o[base + i * n + j] = sqrt(sum);
+            } else {
+                o[base + i * n + j] = sum / o[base + j * n + j];
+            }
+        }
+    }
+}
+)GLSL";
+
+// 下三角行列L(binding0)によるL*x=b(binding1)の前進代入。バッチ要素1個=1スレッド。
+inline constexpr std::string_view solve_triangular_glsl = R"GLSL(
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer L { float l[]; };
+layout(std430, binding = 1) readonly buffer BVEC { float bv[]; };
+layout(std430, binding = 2) buffer OUT { float o[]; };
+void main() {
+    uint e = gl_GlobalInvocationID.x;
+    if (e >= pc.count) return;
+    uint n = pc.in_base_offset;
+    uint lbase = e * n * n;
+    uint vbase = e * n;
+    for (uint i = 0u; i < n; ++i) {
+        float sum = bv[vbase + i];
+        for (uint j = 0u; j < i; ++j) sum -= l[lbase + i * n + j] * o[vbase + j];
+        o[vbase + i] = sum / l[lbase + i * n + i];
+    }
+}
+)GLSL";
+
 // 軸指定リダクション: 出力要素1個=work-group1個を割り当て、axis(in_base_offset)方向をgrid-strideでtree reduce(最大4次元)。
 inline constexpr std::string_view reduce_axis_glsl = R"GLSL(
 layout(local_size_x = 256) in;

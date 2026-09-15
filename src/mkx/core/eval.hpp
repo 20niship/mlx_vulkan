@@ -1,7 +1,6 @@
 #pragma once
 
 #include <algorithm>
-#include <cmath>
 #include <functional>
 #include <queue>
 #include <string>
@@ -23,34 +22,6 @@ template <class Backend> void topo_sort(const NodePtr<Backend>& node, std::unord
   visited.insert(node.get());
   for(auto& in : node->inputs) topo_sort<Backend>(in, visited, order);
   order.push_back(node);
-}
-
-// n×n下三角行列Lの前進代入でL*x=bを解く(SolveTriangular)。逐次依存が強くGPU向きでないためCPUで解く。
-inline std::vector<float> forward_substitute(const std::vector<float>& L, const std::vector<float>& b, int n) {
-  std::vector<float> x(static_cast<size_t>(n));
-  for(int i = 0; i < n; ++i) {
-    float sum = b[static_cast<size_t>(i)];
-    for(int j = 0; j < i; ++j) sum -= L[static_cast<size_t>(i * n + j)] * x[static_cast<size_t>(j)];
-    x[static_cast<size_t>(i)] = sum / L[static_cast<size_t>(i * n + i)];
-  }
-  return x;
-}
-
-// n×n対称正定値行列Aのコレスキー分解A=L*L^T。逐次依存が強くGPU向きでないためCPUで解く。
-inline std::vector<float> cholesky_cpu(const std::vector<float>& a, int n) {
-  std::vector<float> L(static_cast<size_t>(n * n), 0.0f);
-  for(int i = 0; i < n; ++i) {
-    for(int j = 0; j <= i; ++j) {
-      float sum = a[static_cast<size_t>(i * n + j)];
-      for(int k = 0; k < j; ++k) sum -= L[static_cast<size_t>(i * n + k)] * L[static_cast<size_t>(j * n + k)];
-      if(i == j) {
-        L[static_cast<size_t>(i * n + j)] = std::sqrt(sum);
-      } else {
-        L[static_cast<size_t>(i * n + j)] = sum / L[static_cast<size_t>(j * n + j)];
-      }
-    }
-  }
-  return L;
 }
 
 // ── operator fusion(要素単位演算+形状変換のみ、他はdispatch境界) ──
@@ -397,43 +368,6 @@ template <class Backend> void eval_node(OpNode<Backend>& node, std::unordered_ma
     return;
   }
 
-  if(group == ShaderGroup::CpuFallback) {
-    int n = static_cast<int>(node.shape.back());
-    // vmap中はaが{B,n,n}(cholesky)/{B,n,n}+{B,n}(solve_triangular)のバッチ実shapeになる。単純にB回CPUループする(グラフノード複製ではないので安価)。
-    int64_t batch = node.inputs[0]->shape.size() > 2 ? node.inputs[0]->shape[0] : 1;
-
-    auto* in_buf = buffer_for<Backend>(node.inputs[0]);
-    std::vector<float> a(static_cast<size_t>(shape_size(node.inputs[0]->shape)));
-    Backend::download(in_buf, a.data(), a.size() * sizeof(float));
-
-    std::vector<float> b;
-    typename Backend::Buffer* b_buf = nullptr;
-    if(node.type != OpType::Cholesky) {
-      b_buf = buffer_for<Backend>(node.inputs[1]);
-      b.resize(static_cast<size_t>(shape_size(node.inputs[1]->shape)));
-      Backend::download(b_buf, b.data(), b.size() * sizeof(float));
-    }
-
-    std::vector<float> result;
-    result.reserve(a.size());
-    for(int64_t e = 0; e < batch; ++e) {
-      std::vector<float> a_row(a.begin() + e * n * n, a.begin() + (e + 1) * n * n);
-      std::vector<float> row;
-      if(node.type == OpType::Cholesky) {
-        row = cholesky_cpu(a_row, n);
-      } else {
-        std::vector<float> b_row(b.begin() + e * n, b.begin() + (e + 1) * n);
-        row = forward_substitute(a_row, b_row, n);
-      }
-      result.insert(result.end(), row.begin(), row.end());
-    }
-
-    auto* out = Backend::get_or_allocate(&node, result.size() * sizeof(float));
-    Backend::upload(out, result.data(), result.size() * sizeof(float));
-    node.evaluated = true;
-    return;
-  }
-
   if(group == ShaderGroup::Reduce && (node.type == OpType::ArgMax || node.type == OpType::ArgMin) && node.inputs[0]->shape.size() > 1) {
     // ArgMax/ArgMinには軸指定カーネルが無いため、vmap中(入力が{B,n})はCPUで行ごとに求める。
     int64_t b    = node.inputs[0]->shape[0];
@@ -463,9 +397,16 @@ template <class Backend> void eval_node(OpNode<Backend>& node, std::unordered_ma
     return;
   }
 
-  int64_t out_count      = shape_size(node.shape);
-  int64_t dispatch_count = (group == ShaderGroup::Reduce) ? shape_size(node.inputs[0]->shape) : out_count;
-  auto* out              = Backend::get_or_allocate(&node, static_cast<size_t>(out_count) * dtype_size(node.dtype));
+  int64_t out_count = shape_size(node.shape);
+  int64_t dispatch_count;
+  if(group == ShaderGroup::Reduce) {
+    dispatch_count = shape_size(node.inputs[0]->shape);
+  } else if(group == ShaderGroup::LinalgSeq) {
+    dispatch_count = linalg_seq_batch<Backend>(node); // 1スレッド=バッチ要素1個
+  } else {
+    dispatch_count = out_count;
+  }
+  auto* out = Backend::get_or_allocate(&node, static_cast<size_t>(out_count) * dtype_size(node.dtype));
 
   std::string src = shader_source_for(node.type);
   size_t hash     = std::hash<std::string>{}(src);
