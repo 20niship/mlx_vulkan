@@ -85,6 +85,7 @@ inline std::string_view template_for(OpType t) {
     case ShaderGroup::Reduce: return shaders::reduce_glsl;
     case ShaderGroup::ReduceAxis: return shaders::reduce_axis_glsl;
     case ShaderGroup::MatMul: return shaders::matmul_glsl;
+    case ShaderGroup::LinalgSeq: return (t == OpType::Cholesky) ? shaders::cholesky_glsl : shaders::solve_triangular_glsl;
     default: return shaders::binary_glsl;
   }
 }
@@ -102,6 +103,12 @@ inline std::vector<std::byte> pack_push(const Push& push) {
   std::vector<std::byte> out(sizeof(Push));
   std::memcpy(out.data(), &push, sizeof(Push));
   return out;
+}
+
+// Cholesky/SolveTriangularの入力0(n×n行列)shapeが{B,n,n}ならB、{n,n}なら1(非バッチ)。
+template <class Backend> int64_t linalg_seq_batch(const OpNode<Backend>& node) {
+  auto& mat_shape = node.inputs[0]->shape;
+  return mat_shape.size() > 2 ? mat_shape[0] : 1;
 }
 
 template <class Backend> Push build_push(const OpNode<Backend>& node) {
@@ -128,6 +135,11 @@ template <class Backend> Push build_push(const OpNode<Backend>& node) {
         std::memcpy(&push, node.imm_data.data(), sizeof(Push));
         push.count = static_cast<uint32_t>(shape_size(node.shape));
       }
+      break;
+    case ShaderGroup::LinalgSeq:
+      // n/batchはnode.shapeから自明(Cholesky出力{B,n,n}/{n,n}、SolveTriangular出力{B,n}/{n})なのでimm_data不要。
+      push.in_base_offset = static_cast<uint32_t>(node.shape.back());
+      push.count           = static_cast<uint32_t>(linalg_seq_batch(node));
       break;
     default: break;
   }
