@@ -374,6 +374,7 @@ void free_now(VulkanBackend::Buffer* buf);
 // VMAが自前でブロック単位に再利用するため、kMaxPooledPerSize/kMaxPooledTotalの自作プールは不要(free()は素直にvmaDestroyBuffer)。
 
 VulkanBackend::Buffer* VulkanBackend::alloc(size_t nbytes) {
+  nbytes    = std::max<size_t>(nbytes, 1); // Vulkanはsize=0のバッファ作成を許可しない(空スライス等の要素数0ノードで実装によっては検証なしにクラッシュする)
   auto& c   = ctx();
   auto* buf = new Buffer();
   buf->size = nbytes;
@@ -439,6 +440,7 @@ std::string VulkanBackend::debug_stats() {
 #else
 
 VulkanBackend::Buffer* VulkanBackend::alloc(size_t nbytes) {
+  nbytes     = std::max<size_t>(nbytes, 1); // Vulkanはsize=0のバッファ作成を許可しない(空スライス等の要素数0ノードで実装によっては検証なしにクラッシュする)
   auto& pool = free_list();
   auto it    = pool.find(nbytes);
   if(it != pool.end() && !it->second.empty()) {
