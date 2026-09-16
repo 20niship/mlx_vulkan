@@ -5,6 +5,7 @@
 #include <vector>
 
 #include <mkx/core/backend_concept.hpp>
+#include <mkx/core/half.hpp>
 #include <mkx/core/op_node.hpp>
 #include <mkx/core/types.hpp>
 #include <mkx/vulkan/vulkan_backend.hpp>
@@ -13,11 +14,19 @@ namespace mkx {
 
 template <class T, size_t N, ComputeBackend Backend = VulkanBackend> class array {
 public:
-  explicit array(Shape shape) : node_(make_node<Backend>(OpType::Const, std::move(shape), dtype_of())) {}
+  explicit array(Shape shape, Dtype dtype = dtype_of()) : node_(make_node<Backend>(OpType::Const, std::move(shape), dtype)) {}
 
   explicit array(NodePtr<Backend> node) : node_(std::move(node)) {}
 
-  array(std::vector<T> data, Shape shape) : node_(make_node<Backend>(OpType::Const, std::move(shape), dtype_of())) {
+  array(std::vector<T> data, Shape shape, Dtype dtype = dtype_of()) : node_(make_node<Backend>(OpType::Const, std::move(shape), dtype)) {
+    if constexpr(std::is_same_v<T, float>) {
+      if(dtype == Dtype::Float16) {
+        node_->host_data.resize(data.size() * sizeof(uint16_t));
+        auto* dst = reinterpret_cast<uint16_t*>(node_->host_data.data());
+        for(size_t i = 0; i < data.size(); i++) dst[i] = float_to_half(data[i]);
+        return;
+      }
+    }
     node_->host_data.resize(data.size() * sizeof(T));
     std::memcpy(node_->host_data.data(), data.data(), node_->host_data.size());
   }
@@ -42,7 +51,16 @@ public:
   std::vector<T> to_vector() const {
     assert(node_->evaluated && "eval(arr) must be called before to_vector()");
     auto* buf = buffer_for<Backend>(node_);
-    std::vector<T> out(static_cast<size_t>(shape_size(node_->shape)));
+    size_t n  = static_cast<size_t>(shape_size(node_->shape));
+    std::vector<T> out(n);
+    if constexpr(std::is_same_v<T, float>) {
+      if(node_->dtype == Dtype::Float16) {
+        std::vector<uint16_t> raw(n);
+        Backend::download(buf, raw.data(), raw.size() * sizeof(uint16_t));
+        for(size_t i = 0; i < n; i++) out[i] = half_to_float(raw[i]);
+        return out;
+      }
+    }
     Backend::download(buf, out.data(), out.size() * sizeof(T));
     return out;
   }
