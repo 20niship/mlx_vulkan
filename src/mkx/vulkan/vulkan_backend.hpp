@@ -43,6 +43,13 @@ struct VulkanBackend {
   static void dispatch(Pipeline& pipeline, std::span<Buffer*> buffers, std::span<const std::byte> push_data, std::array<uint32_t, 3> groups);
   static void wait_idle();
 
+  // begin_replay/end_replayで挟んだdispatch()群を1本のVkCommandBufferとしてkeyで保持し、以後replay(key)のみで再submitできるようにする(グラフ再構築を回避)。
+  static bool has_replay(const void* key);
+  static void begin_replay(const void* key);
+  static void end_replay(const void* key);
+  static void replay(const void* key);
+  static void invalidate_replay(const void* key);
+
   // Live allocator/pool stats (buffer count + bytes currently retained), for leak diagnostics. Cheap; safe to poll between benchmark iterations.
   static std::string debug_stats();
 
