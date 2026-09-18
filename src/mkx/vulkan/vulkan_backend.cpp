@@ -121,7 +121,13 @@ struct Context {
     if(device_count == 0) throw std::runtime_error("mkx: no Vulkan physical device found");
     std::vector<VkPhysicalDevice> devices(device_count);
     vkEnumeratePhysicalDevices(instance, &device_count, devices.data());
-    physical = devices[0];
+    {
+      int dev_idx = 0;
+      const char* env_idx = std::getenv("MKX_VULKAN_DEVICE_INDEX");
+      if (env_idx) dev_idx = std::atoi(env_idx);
+      if (dev_idx < 0 || dev_idx >= (int)device_count) dev_idx = 0;
+      physical = devices[dev_idx];
+    }
 
     uint32_t family_count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(physical, &family_count, nullptr);
