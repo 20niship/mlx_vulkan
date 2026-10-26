@@ -445,6 +445,27 @@ std::string VulkanBackend::debug_stats() {
 
 #else
 
+// 計算バッファはデバイスローカル(VRAM)に置く。HOST_VISIBLE|HOST_COHERENTだけを要求するとdGPUではシステムメモリになり、全カーネルのload/storeがPCIe越しになる。
+// CPUとのやり取り(upload/download)はステージングバッファ経由。MKX_DEVICE_LOCAL=0で従来(ホストメモリ)に戻せる。
+static bool use_device_local() {
+  static const bool on = !getenv("MKX_DEVICE_LOCAL") || atoi(getenv("MKX_DEVICE_LOCAL")) != 0;
+  return on;
+}
+
+// find_memory_typeはpropsを全て含む最初の型を返す。デバイスローカルかつホスト不可視の型が無い(統合GPU等)ときはfalseを返す。
+static bool find_device_local_type(VkPhysicalDevice phys, uint32_t type_bits, uint32_t* out_index) {
+  VkPhysicalDeviceMemoryProperties mp;
+  vkGetPhysicalDeviceMemoryProperties(phys, &mp);
+  for(uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
+    auto f = mp.memoryTypes[i].propertyFlags;
+    if((type_bits & (1u << i)) && (f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) && !(f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
+      *out_index = i;
+      return true;
+    }
+  }
+  return false;
+}
+
 VulkanBackend::Buffer* VulkanBackend::alloc(size_t nbytes) {
   nbytes     = std::max<size_t>(nbytes, 1); // Vulkanはsize=0のバッファ作成を許可しない(空スライス等の要素数0ノードで実装によっては検証なしにクラッシュする)
   auto& pool = free_list();
@@ -462,7 +483,7 @@ VulkanBackend::Buffer* VulkanBackend::alloc(size_t nbytes) {
 
   VkBufferCreateInfo buffer_info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
   buffer_info.size        = nbytes;
-  buffer_info.usage       = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  buffer_info.usage       = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
   buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   if(vkCreateBuffer(c.device, &buffer_info, nullptr, &buf->buffer) != VK_SUCCESS) {
     throw std::runtime_error("mkx: vkCreateBuffer failed (nbytes=" + std::to_string(nbytes) + ")");
@@ -471,11 +492,20 @@ VulkanBackend::Buffer* VulkanBackend::alloc(size_t nbytes) {
   VkMemoryRequirements reqs;
   vkGetBufferMemoryRequirements(c.device, buf->buffer, &reqs);
   VkMemoryAllocateInfo alloc_info{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-  alloc_info.allocationSize  = reqs.size;
-  alloc_info.memoryTypeIndex = find_memory_type(c.physical, reqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  alloc_info.allocationSize = reqs.size;
+  uint32_t dl_index         = 0;
+  bool want_dl              = use_device_local() && find_device_local_type(c.physical, reqs.memoryTypeBits, &dl_index);
+  alloc_info.memoryTypeIndex = want_dl ? dl_index : find_memory_type(c.physical, reqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  buf->host_visible          = !want_dl;
   // Silent failures here previously left buf->memory as VK_NULL_HANDLE; later vkMapMemory on it fails too (also unchecked), and the ensuing memcpy into a garbage pointer corrupts state until the OS kills the process -- surface the real error instead.
   if(vkAllocateMemory(c.device, &alloc_info, nullptr, &buf->memory) != VK_SUCCESS) {
-    throw std::runtime_error("mkx: vkAllocateMemory failed (size=" + std::to_string(reqs.size) + ") -- likely too many live VkDeviceMemory allocations");
+    if(want_dl) {  // VRAMが足りない等: ホストメモリにフォールバックする
+      alloc_info.memoryTypeIndex = find_memory_type(c.physical, reqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+      buf->host_visible          = true;
+    }
+    if(buf->host_visible && vkAllocateMemory(c.device, &alloc_info, nullptr, &buf->memory) != VK_SUCCESS) {
+      throw std::runtime_error("mkx: vkAllocateMemory failed (size=" + std::to_string(reqs.size) + ") -- likely too many live VkDeviceMemory allocations");
+    }
   }
   vkBindBufferMemory(c.device, buf->buffer, buf->memory, 0);
   return buf;
@@ -500,9 +530,78 @@ void free_now(VulkanBackend::Buffer* buf) {
   delete buf;
 }
 
+// CPU<->デバイスローカルバッファの転送に使うステージングバッファ(ホスト可視、必要なら大きく作り直す)。
+struct Staging {
+  VkBuffer buffer       = VK_NULL_HANDLE;
+  VkDeviceMemory memory = VK_NULL_HANDLE;
+  size_t size           = 0;
+};
+static Staging& staging() {
+  static Staging s;
+  return s;
+}
+static void ensure_staging(size_t nbytes) {
+  auto& s = staging();
+  if(s.size >= nbytes) return;
+  auto& c = ctx();
+  if(s.buffer != VK_NULL_HANDLE) {
+    vkDestroyBuffer(c.device, s.buffer, nullptr);
+    vkFreeMemory(c.device, s.memory, nullptr);
+  }
+  size_t sz = std::max<size_t>(nbytes, 4u << 20);
+  VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  bi.size        = sz;
+  bi.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  if(vkCreateBuffer(c.device, &bi, nullptr, &s.buffer) != VK_SUCCESS) throw std::runtime_error("mkx: staging vkCreateBuffer failed");
+  VkMemoryRequirements reqs;
+  vkGetBufferMemoryRequirements(c.device, s.buffer, &reqs);
+  VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+  ai.allocationSize  = reqs.size;
+  ai.memoryTypeIndex = find_memory_type(c.physical, reqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  if(vkAllocateMemory(c.device, &ai, nullptr, &s.memory) != VK_SUCCESS) throw std::runtime_error("mkx: staging vkAllocateMemory failed");
+  vkBindBufferMemory(c.device, s.buffer, s.memory, 0);
+  s.size = sz;
+}
+
+// ステージングとデバイスローカルバッファ間をコピーして完了を待つ。to_device=trueならstaging->buf、falseならbuf->staging。
+static void staging_copy(VulkanBackend::Buffer* buf, size_t nbytes, bool to_device) {
+  auto& c = ctx();
+  auto& s = staging();
+  VkCommandBufferAllocateInfo ca{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+  ca.commandPool        = c.command_pool;
+  ca.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  ca.commandBufferCount = 1;
+  VkCommandBuffer cmd;
+  vkAllocateCommandBuffers(c.device, &ca, &cmd);
+  VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+  bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  vkBeginCommandBuffer(cmd, &bi);
+  VkBufferCopy region{0, 0, nbytes};
+  if(to_device) vkCmdCopyBuffer(cmd, s.buffer, buf->buffer, 1, &region);
+  else vkCmdCopyBuffer(cmd, buf->buffer, s.buffer, 1, &region);
+  vkEndCommandBuffer(cmd);
+  VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+  si.commandBufferCount = 1;
+  si.pCommandBuffers    = &cmd;
+  vkQueueSubmit(c.queue, 1, &si, VK_NULL_HANDLE);
+  vkQueueWaitIdle(c.queue);
+  vkFreeCommandBuffers(c.device, c.command_pool, 1, &cmd);
+}
+
 void VulkanBackend::upload(Buffer* buf, const void* data, size_t nbytes) {
   auto& c      = ctx();
   void* mapped = nullptr;
+  if(!buf->host_visible) {
+    flush_batch();  // 未submitのdispatchがこのバッファを読む前に上書きしないよう先に流す
+    ensure_staging(nbytes);
+    auto& s = staging();
+    if(vkMapMemory(c.device, s.memory, 0, nbytes, 0, &mapped) != VK_SUCCESS) throw std::runtime_error("mkx: vkMapMemory(staging) failed in upload");
+    std::memcpy(mapped, data, nbytes);
+    vkUnmapMemory(c.device, s.memory);
+    staging_copy(buf, nbytes, true);
+    return;
+  }
   if(vkMapMemory(c.device, buf->memory, 0, nbytes, 0, &mapped) != VK_SUCCESS) {
     throw std::runtime_error("mkx: vkMapMemory failed in upload (nbytes=" + std::to_string(nbytes) + ")");
   }
@@ -515,6 +614,15 @@ void VulkanBackend::download(Buffer* buf, void* data, size_t nbytes) {
   flush_batch();
   auto& c      = ctx();
   void* mapped = nullptr;
+  if(!buf->host_visible) {
+    ensure_staging(nbytes);
+    staging_copy(buf, nbytes, false);
+    auto& s = staging();
+    if(vkMapMemory(c.device, s.memory, 0, nbytes, 0, &mapped) != VK_SUCCESS) throw std::runtime_error("mkx: vkMapMemory(staging) failed in download");
+    std::memcpy(data, mapped, nbytes);
+    vkUnmapMemory(c.device, s.memory);
+    return;
+  }
   if(vkMapMemory(c.device, buf->memory, 0, nbytes, 0, &mapped) != VK_SUCCESS) {
     throw std::runtime_error("mkx: vkMapMemory failed in download (nbytes=" + std::to_string(nbytes) + ")");
   }

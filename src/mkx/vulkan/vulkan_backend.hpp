@@ -22,6 +22,7 @@ struct VulkanBackend {
     VkBuffer buffer       = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     size_t size           = 0;
+    bool host_visible     = true; // falseならデバイスローカル(VRAM)メモリで、CPUからのupload/downloadはステージングバッファ経由
 #ifdef MKX_USE_VMA
     VmaAllocation allocation = VK_NULL_HANDLE;
 #endif
