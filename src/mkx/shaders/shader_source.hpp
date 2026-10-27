@@ -90,8 +90,18 @@ inline std::string_view template_for(OpType t) {
   }
 }
 
-inline std::string shader_source_for(OpType t) {
-  std::string src = "#version 450\n#define OPCODE ";
+inline std::string shader_source_for(OpType t, Dtype dtype) {
+  std::string src = "#version 450\n";
+  // AsTypeは入出力でdtypeが異なりうるため単一SCALARマクロでは扱えない、常にfloatにフォールバック(fp16↔fp32変換は将来対応)
+  if(t == OpType::AsType) dtype = Dtype::Float32;
+  if(dtype == Dtype::Float16) {
+    src += "#extension GL_EXT_shader_16bit_storage : require\n";
+    src += "#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require\n";
+    src += "#define SCALAR float16_t\n";
+  } else {
+    src += "#define SCALAR float\n";
+  }
+  src += "#define OPCODE ";
   src += std::to_string(opcode_for(t));
   src += "\n";
   src += shaders::push_decl;

@@ -5,11 +5,12 @@
 
 namespace mkx {
 
-enum class Dtype { Float32, Int32, Bool };
+enum class Dtype { Float32, Int32, Bool, Float16 };
 
 inline constexpr Dtype float32 = Dtype::Float32;
 inline constexpr Dtype int32   = Dtype::Int32;
 inline constexpr Dtype bool_   = Dtype::Bool;
+inline constexpr Dtype float16 = Dtype::Float16;
 
 using Shape = std::vector<int64_t>;
 
@@ -24,6 +25,7 @@ inline size_t dtype_size(Dtype dt) {
     case Dtype::Float32: return 4;
     case Dtype::Int32: return 4;
     case Dtype::Bool: return 4; // GPU側はuint32で保持
+    case Dtype::Float16: return 2;
   }
   return 4;
 }

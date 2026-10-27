@@ -62,6 +62,7 @@ add_executable(mkx_tests
     tests/test_graph_composite.cpp
     tests/test_persistent_generic.cpp
     tests/test_vmap_batched.cpp
+    tests/test_fp16.cpp
 )
 target_include_directories(mkx_tests PRIVATE tests)
 target_link_libraries(mkx_tests PRIVATE mkx doctest::doctest)
