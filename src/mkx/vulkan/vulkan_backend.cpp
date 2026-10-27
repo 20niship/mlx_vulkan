@@ -122,10 +122,10 @@ struct Context {
     std::vector<VkPhysicalDevice> devices(device_count);
     vkEnumeratePhysicalDevices(instance, &device_count, devices.data());
     {
-      int dev_idx = 0;
+      int dev_idx         = 0;
       const char* env_idx = std::getenv("MKX_VULKAN_DEVICE_INDEX");
-      if (env_idx) dev_idx = std::atoi(env_idx);
-      if (dev_idx < 0 || dev_idx >= (int)device_count) dev_idx = 0;
+      if(env_idx) dev_idx = std::atoi(env_idx);
+      if(dev_idx < 0 || dev_idx >= (int)device_count) dev_idx = 0;
       physical = devices[dev_idx];
     }
 
@@ -492,14 +492,14 @@ VulkanBackend::Buffer* VulkanBackend::alloc(size_t nbytes) {
   VkMemoryRequirements reqs;
   vkGetBufferMemoryRequirements(c.device, buf->buffer, &reqs);
   VkMemoryAllocateInfo alloc_info{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-  alloc_info.allocationSize = reqs.size;
-  uint32_t dl_index         = 0;
-  bool want_dl              = use_device_local() && find_device_local_type(c.physical, reqs.memoryTypeBits, &dl_index);
+  alloc_info.allocationSize  = reqs.size;
+  uint32_t dl_index          = 0;
+  bool want_dl               = use_device_local() && find_device_local_type(c.physical, reqs.memoryTypeBits, &dl_index);
   alloc_info.memoryTypeIndex = want_dl ? dl_index : find_memory_type(c.physical, reqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
   buf->host_visible          = !want_dl;
   // Silent failures here previously left buf->memory as VK_NULL_HANDLE; later vkMapMemory on it fails too (also unchecked), and the ensuing memcpy into a garbage pointer corrupts state until the OS kills the process -- surface the real error instead.
   if(vkAllocateMemory(c.device, &alloc_info, nullptr, &buf->memory) != VK_SUCCESS) {
-    if(want_dl) {  // VRAMが足りない等: ホストメモリにフォールバックする
+    if(want_dl) { // VRAMが足りない等: ホストメモリにフォールバックする
       alloc_info.memoryTypeIndex = find_memory_type(c.physical, reqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
       buf->host_visible          = true;
     }
@@ -578,8 +578,10 @@ static void staging_copy(VulkanBackend::Buffer* buf, size_t nbytes, bool to_devi
   bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   vkBeginCommandBuffer(cmd, &bi);
   VkBufferCopy region{0, 0, nbytes};
-  if(to_device) vkCmdCopyBuffer(cmd, s.buffer, buf->buffer, 1, &region);
-  else vkCmdCopyBuffer(cmd, buf->buffer, s.buffer, 1, &region);
+  if(to_device)
+    vkCmdCopyBuffer(cmd, s.buffer, buf->buffer, 1, &region);
+  else
+    vkCmdCopyBuffer(cmd, buf->buffer, s.buffer, 1, &region);
   vkEndCommandBuffer(cmd);
   VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
   si.commandBufferCount = 1;
@@ -593,7 +595,7 @@ void VulkanBackend::upload(Buffer* buf, const void* data, size_t nbytes) {
   auto& c      = ctx();
   void* mapped = nullptr;
   if(!buf->host_visible) {
-    flush_batch();  // 未submitのdispatchがこのバッファを読む前に上書きしないよう先に流す
+    flush_batch(); // 未submitのdispatchがこのバッファを読む前に上書きしないよう先に流す
     ensure_staging(nbytes);
     auto& s = staging();
     if(vkMapMemory(c.device, s.memory, 0, nbytes, 0, &mapped) != VK_SUCCESS) throw std::runtime_error("mkx: vkMapMemory(staging) failed in upload");
