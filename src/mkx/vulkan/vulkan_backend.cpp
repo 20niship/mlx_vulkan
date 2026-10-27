@@ -10,6 +10,7 @@
 #include <cstring>
 #include <fstream>
 #include <functional>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -31,7 +32,11 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBit
 }
 #endif
 
+bool g_ctx_started = false;
+std::optional<VulkanBackend::ExternalDevice> g_external;
+
 struct Context {
+  bool owns_device           = true;
   VkInstance instance        = VK_NULL_HANDLE;
   VkPhysicalDevice physical  = VK_NULL_HANDLE;
   VkDevice device            = VK_NULL_HANDLE;
@@ -47,126 +52,136 @@ struct Context {
   std::unordered_set<VulkanBackend::Buffer*> persistent_bufs;
 
   Context() {
-    VkApplicationInfo app_info{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-    app_info.pApplicationName = "mkx";
-    app_info.apiVersion       = VK_API_VERSION_1_3;
-
-    uint32_t inst_ext_count = 0;
-    vkEnumerateInstanceExtensionProperties(nullptr, &inst_ext_count, nullptr);
-    std::vector<VkExtensionProperties> inst_exts(inst_ext_count);
-    vkEnumerateInstanceExtensionProperties(nullptr, &inst_ext_count, inst_exts.data());
-
-    // MoltenVKはVK_KHR_portability_enumeration必須、Linux+lavapipe等には無いため存在する場合のみ有効化する。
-    const char* portability_enum_ext = "VK_KHR_portability_enumeration";
-    bool has_portability_enum        = false;
-    for(auto& e : inst_exts) {
-      if(std::string_view(e.extensionName) == portability_enum_ext) has_portability_enum = true;
-    }
-
-    std::vector<const char*> inst_extensions;
-    if(has_portability_enum) inst_extensions.push_back(portability_enum_ext);
-
-    std::vector<const char*> inst_layers;
-#ifdef MKX_ENABLE_VALIDATION
-    // 診断ビルドのみ: レイヤ自体の有無を確認してから有効化(未インストール環境でvkCreateInstanceを失敗させない)。
-    bool has_debug_utils = false;
-    for(auto& e : inst_exts) {
-      if(std::string_view(e.extensionName) == VK_EXT_DEBUG_UTILS_EXTENSION_NAME) has_debug_utils = true;
-    }
-    uint32_t layer_count = 0;
-    vkEnumerateInstanceLayerProperties(&layer_count, nullptr);
-    std::vector<VkLayerProperties> layers(layer_count);
-    vkEnumerateInstanceLayerProperties(&layer_count, layers.data());
-    bool has_validation_layer = false;
-    for(auto& l : layers) {
-      if(std::string_view(l.layerName) == "VK_LAYER_KHRONOS_validation") has_validation_layer = true;
-    }
-    if(has_validation_layer && has_debug_utils) {
-      inst_layers.push_back("VK_LAYER_KHRONOS_validation");
-      inst_extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    g_ctx_started = true;
+    if(g_external) {
+      instance     = g_external->instance;
+      physical     = g_external->physical;
+      device       = g_external->device;
+      queue        = g_external->queue;
+      queue_family = g_external->queue_family;
+      owns_device  = false;
     } else {
-      fprintf(stderr, "[mkx] MKX_ENABLE_VALIDATION requested but VK_LAYER_KHRONOS_validation/VK_EXT_debug_utils not available; skipping.\n");
-    }
-#endif
+      VkApplicationInfo app_info{VK_STRUCTURE_TYPE_APPLICATION_INFO};
+      app_info.pApplicationName = "mkx";
+      app_info.apiVersion       = VK_API_VERSION_1_3;
 
-    VkInstanceCreateInfo instance_info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
-    instance_info.pApplicationInfo        = &app_info;
-    instance_info.enabledExtensionCount   = static_cast<uint32_t>(inst_extensions.size());
-    instance_info.ppEnabledExtensionNames = inst_extensions.data();
-    instance_info.enabledLayerCount       = static_cast<uint32_t>(inst_layers.size());
-    instance_info.ppEnabledLayerNames     = inst_layers.data();
-    if(has_portability_enum) instance_info.flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+      uint32_t inst_ext_count = 0;
+      vkEnumerateInstanceExtensionProperties(nullptr, &inst_ext_count, nullptr);
+      std::vector<VkExtensionProperties> inst_exts(inst_ext_count);
+      vkEnumerateInstanceExtensionProperties(nullptr, &inst_ext_count, inst_exts.data());
 
-#ifdef MKX_ENABLE_VALIDATION
-    VkDebugUtilsMessengerCreateInfoEXT messenger_info{VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
-    messenger_info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-    messenger_info.messageType     = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-    messenger_info.pfnUserCallback = debug_callback;
-    if(!inst_layers.empty()) instance_info.pNext = &messenger_info; // instance生成時点からのメッセージも捕捉する
-#endif
-
-    if(vkCreateInstance(&instance_info, nullptr, &instance) != VK_SUCCESS) {
-      throw std::runtime_error("mkx: vkCreateInstance failed");
-    }
-
-#ifdef MKX_ENABLE_VALIDATION
-    if(!inst_layers.empty()) {
-      auto create_fn = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT"));
-      if(create_fn) create_fn(instance, &messenger_info, nullptr, &debug_messenger);
-    }
-#endif
-
-    uint32_t device_count = 0;
-    vkEnumeratePhysicalDevices(instance, &device_count, nullptr);
-    if(device_count == 0) throw std::runtime_error("mkx: no Vulkan physical device found");
-    std::vector<VkPhysicalDevice> devices(device_count);
-    vkEnumeratePhysicalDevices(instance, &device_count, devices.data());
-    {
-      int dev_idx         = 0;
-      const char* env_idx = std::getenv("MKX_VULKAN_DEVICE_INDEX");
-      if(env_idx) dev_idx = std::atoi(env_idx);
-      if(dev_idx < 0 || dev_idx >= (int)device_count) dev_idx = 0;
-      physical = devices[dev_idx];
-    }
-
-    uint32_t family_count = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(physical, &family_count, nullptr);
-    std::vector<VkQueueFamilyProperties> families(family_count);
-    vkGetPhysicalDeviceQueueFamilyProperties(physical, &family_count, families.data());
-    queue_family = 0;
-    for(uint32_t i = 0; i < family_count; ++i) {
-      if(families[i].queueFlags & VK_QUEUE_COMPUTE_BIT) {
-        queue_family = i;
-        break;
+      // MoltenVKはVK_KHR_portability_enumeration必須、Linux+lavapipe等には無いため存在する場合のみ有効化する。
+      const char* portability_enum_ext = "VK_KHR_portability_enumeration";
+      bool has_portability_enum        = false;
+      for(auto& e : inst_exts) {
+        if(std::string_view(e.extensionName) == portability_enum_ext) has_portability_enum = true;
       }
+
+      std::vector<const char*> inst_extensions;
+      if(has_portability_enum) inst_extensions.push_back(portability_enum_ext);
+
+      std::vector<const char*> inst_layers;
+#ifdef MKX_ENABLE_VALIDATION
+      // 診断ビルドのみ: レイヤ自体の有無を確認してから有効化(未インストール環境でvkCreateInstanceを失敗させない)。
+      bool has_debug_utils = false;
+      for(auto& e : inst_exts) {
+        if(std::string_view(e.extensionName) == VK_EXT_DEBUG_UTILS_EXTENSION_NAME) has_debug_utils = true;
+      }
+      uint32_t layer_count = 0;
+      vkEnumerateInstanceLayerProperties(&layer_count, nullptr);
+      std::vector<VkLayerProperties> layers(layer_count);
+      vkEnumerateInstanceLayerProperties(&layer_count, layers.data());
+      bool has_validation_layer = false;
+      for(auto& l : layers) {
+        if(std::string_view(l.layerName) == "VK_LAYER_KHRONOS_validation") has_validation_layer = true;
+      }
+      if(has_validation_layer && has_debug_utils) {
+        inst_layers.push_back("VK_LAYER_KHRONOS_validation");
+        inst_extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+      } else {
+        fprintf(stderr, "[mkx] MKX_ENABLE_VALIDATION requested but VK_LAYER_KHRONOS_validation/VK_EXT_debug_utils not available; skipping.\n");
+      }
+#endif
+
+      VkInstanceCreateInfo instance_info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+      instance_info.pApplicationInfo        = &app_info;
+      instance_info.enabledExtensionCount   = static_cast<uint32_t>(inst_extensions.size());
+      instance_info.ppEnabledExtensionNames = inst_extensions.data();
+      instance_info.enabledLayerCount       = static_cast<uint32_t>(inst_layers.size());
+      instance_info.ppEnabledLayerNames     = inst_layers.data();
+      if(has_portability_enum) instance_info.flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+
+#ifdef MKX_ENABLE_VALIDATION
+      VkDebugUtilsMessengerCreateInfoEXT messenger_info{VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
+      messenger_info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+      messenger_info.messageType     = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+      messenger_info.pfnUserCallback = debug_callback;
+      if(!inst_layers.empty()) instance_info.pNext = &messenger_info; // instance生成時点からのメッセージも捕捉する
+#endif
+
+      if(vkCreateInstance(&instance_info, nullptr, &instance) != VK_SUCCESS) {
+        throw std::runtime_error("mkx: vkCreateInstance failed");
+      }
+
+#ifdef MKX_ENABLE_VALIDATION
+      if(!inst_layers.empty()) {
+        auto create_fn = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT"));
+        if(create_fn) create_fn(instance, &messenger_info, nullptr, &debug_messenger);
+      }
+#endif
+
+      uint32_t device_count = 0;
+      vkEnumeratePhysicalDevices(instance, &device_count, nullptr);
+      if(device_count == 0) throw std::runtime_error("mkx: no Vulkan physical device found");
+      std::vector<VkPhysicalDevice> devices(device_count);
+      vkEnumeratePhysicalDevices(instance, &device_count, devices.data());
+      {
+        int dev_idx         = 0;
+        const char* env_idx = std::getenv("MKX_VULKAN_DEVICE_INDEX");
+        if(env_idx) dev_idx = std::atoi(env_idx);
+        if(dev_idx < 0 || dev_idx >= (int)device_count) dev_idx = 0;
+        physical = devices[dev_idx];
+      }
+
+      uint32_t family_count = 0;
+      vkGetPhysicalDeviceQueueFamilyProperties(physical, &family_count, nullptr);
+      std::vector<VkQueueFamilyProperties> families(family_count);
+      vkGetPhysicalDeviceQueueFamilyProperties(physical, &family_count, families.data());
+      queue_family = 0;
+      for(uint32_t i = 0; i < family_count; ++i) {
+        if(families[i].queueFlags & VK_QUEUE_COMPUTE_BIT) {
+          queue_family = i;
+          break;
+        }
+      }
+
+      float priority = 1.0f;
+      VkDeviceQueueCreateInfo queue_info{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+      queue_info.queueFamilyIndex = queue_family;
+      queue_info.queueCount       = 1;
+      queue_info.pQueuePriorities = &priority;
+
+      VkDeviceCreateInfo device_info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+      device_info.queueCreateInfoCount = 1;
+      device_info.pQueueCreateInfos    = &queue_info;
+
+      const char* portability_ext = "VK_KHR_portability_subset";
+      uint32_t ext_count          = 0;
+      vkEnumerateDeviceExtensionProperties(physical, nullptr, &ext_count, nullptr);
+      std::vector<VkExtensionProperties> exts(ext_count);
+      vkEnumerateDeviceExtensionProperties(physical, nullptr, &ext_count, exts.data());
+      std::vector<const char*> enabled_exts;
+      for(auto& e : exts) {
+        if(std::string_view(e.extensionName) == portability_ext) enabled_exts.push_back(portability_ext);
+      }
+      device_info.enabledExtensionCount   = static_cast<uint32_t>(enabled_exts.size());
+      device_info.ppEnabledExtensionNames = enabled_exts.data();
+
+      if(vkCreateDevice(physical, &device_info, nullptr, &device) != VK_SUCCESS) {
+        throw std::runtime_error("mkx: vkCreateDevice failed");
+      }
+      vkGetDeviceQueue(device, queue_family, 0, &queue);
     }
-
-    float priority = 1.0f;
-    VkDeviceQueueCreateInfo queue_info{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
-    queue_info.queueFamilyIndex = queue_family;
-    queue_info.queueCount       = 1;
-    queue_info.pQueuePriorities = &priority;
-
-    VkDeviceCreateInfo device_info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
-    device_info.queueCreateInfoCount = 1;
-    device_info.pQueueCreateInfos    = &queue_info;
-
-    const char* portability_ext = "VK_KHR_portability_subset";
-    uint32_t ext_count          = 0;
-    vkEnumerateDeviceExtensionProperties(physical, nullptr, &ext_count, nullptr);
-    std::vector<VkExtensionProperties> exts(ext_count);
-    vkEnumerateDeviceExtensionProperties(physical, nullptr, &ext_count, exts.data());
-    std::vector<const char*> enabled_exts;
-    for(auto& e : exts) {
-      if(std::string_view(e.extensionName) == portability_ext) enabled_exts.push_back(portability_ext);
-    }
-    device_info.enabledExtensionCount   = static_cast<uint32_t>(enabled_exts.size());
-    device_info.ppEnabledExtensionNames = enabled_exts.data();
-
-    if(vkCreateDevice(physical, &device_info, nullptr, &device) != VK_SUCCESS) {
-      throw std::runtime_error("mkx: vkCreateDevice failed");
-    }
-    vkGetDeviceQueue(device, queue_family, 0, &queue);
 
     VkCommandPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pool_info.flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -204,6 +219,7 @@ struct Context {
     if(allocator) vmaDestroyAllocator(allocator);
 #endif
     if(command_pool) vkDestroyCommandPool(device, command_pool, nullptr);
+    if(!owns_device) return; // 注入されたinstance/deviceは注入側が破棄する
     vkDestroyDevice(device, nullptr);
 #ifdef MKX_ENABLE_VALIDATION
     if(debug_messenger) {
@@ -302,6 +318,12 @@ std::vector<uint32_t> compile_glsl_to_spirv(std::string_view source) {
 }
 
 } // namespace
+
+bool VulkanBackend::use_external_device(const ExternalDevice& dev) {
+  if(g_ctx_started) return false;
+  g_external = dev;
+  return true;
+}
 
 VulkanBackend::Pipeline VulkanBackend::compile(std::string_view source, size_t /*hash*/) {
   auto& c    = ctx();
