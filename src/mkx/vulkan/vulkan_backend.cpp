@@ -38,6 +38,7 @@ struct Context {
   VkQueue queue              = VK_NULL_HANDLE;
   uint32_t queue_family      = 0;
   VkCommandPool command_pool = VK_NULL_HANDLE;
+  VkPhysicalDeviceFeatures enabled_features{};
 #ifdef MKX_ENABLE_VALIDATION
   VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;
 #endif
@@ -134,10 +135,19 @@ struct Context {
     std::vector<VkQueueFamilyProperties> families(family_count);
     vkGetPhysicalDeviceQueueFamilyProperties(physical, &family_count, families.data());
     queue_family = 0;
+    // 描画(graphics)も同じキューで流すため、COMPUTE+GRAPHICSを持つfamilyを優先する(無ければ従来通り最初のCOMPUTE family)。
     for(uint32_t i = 0; i < family_count; ++i) {
-      if(families[i].queueFlags & VK_QUEUE_COMPUTE_BIT) {
+      if((families[i].queueFlags & (VK_QUEUE_COMPUTE_BIT | VK_QUEUE_GRAPHICS_BIT)) == (VK_QUEUE_COMPUTE_BIT | VK_QUEUE_GRAPHICS_BIT)) {
         queue_family = i;
         break;
+      }
+    }
+    if(!(families[queue_family].queueFlags & VK_QUEUE_COMPUTE_BIT)) {
+      for(uint32_t i = 0; i < family_count; ++i) {
+        if(families[i].queueFlags & VK_QUEUE_COMPUTE_BIT) {
+          queue_family = i;
+          break;
+        }
       }
     }
 
@@ -150,6 +160,14 @@ struct Context {
     VkDeviceCreateInfo device_info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     device_info.queueCreateInfoCount = 1;
     device_info.pQueueCreateInfos    = &queue_info;
+
+    // indirect描画に必要な機能だけを、物理デバイスが対応する場合に限り有効化する(computeだけの利用には影響しない)。
+    VkPhysicalDeviceFeatures supported{};
+    vkGetPhysicalDeviceFeatures(physical, &supported);
+    enabled_features.multiDrawIndirect         = supported.multiDrawIndirect;
+    enabled_features.drawIndirectFirstInstance = supported.drawIndirectFirstInstance;
+    enabled_features.shaderClipDistance        = supported.shaderClipDistance;
+    device_info.pEnabledFeatures               = &enabled_features;
 
     const char* portability_ext = "VK_KHR_portability_subset";
     uint32_t ext_count          = 0;
@@ -722,6 +740,11 @@ void VulkanBackend::dispatch(Pipeline& pipeline, std::span<Buffer*> buffers, std
   }
   vkCmdDispatch(b.cmd, groups[0], groups[1], groups[2]);
   b.has_prior_dispatch = true;
+}
+
+VulkanBackend::DeviceHandles VulkanBackend::device_handles() {
+  auto& c = ctx();
+  return {c.instance, c.physical, c.device, c.queue, c.queue_family, c.command_pool, c.enabled_features.multiDrawIndirect && c.enabled_features.drawIndirectFirstInstance, static_cast<bool>(c.enabled_features.shaderClipDistance)};
 }
 
 void VulkanBackend::wait_idle() {
