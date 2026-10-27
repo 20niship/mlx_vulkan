@@ -580,7 +580,12 @@ static void ensure_staging(size_t nbytes) {
   vkGetBufferMemoryRequirements(c.device, s.buffer, &reqs);
   VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
   ai.allocationSize  = reqs.size;
-  ai.memoryTypeIndex = find_memory_type(c.physical, reqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  // 非キャッシュのホストメモリ(write-combined)からの読み出しは約200MB/sしか出ず、downloadが支配的になる。キャッシュ付きを優先し、無ければ従来の型にする。
+  try {
+    ai.memoryTypeIndex = find_memory_type(c.physical, reqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+  } catch(const std::runtime_error&) {
+    ai.memoryTypeIndex = find_memory_type(c.physical, reqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  }
   if(vkAllocateMemory(c.device, &ai, nullptr, &s.memory) != VK_SUCCESS) throw std::runtime_error("mkx: staging vkAllocateMemory failed");
   vkBindBufferMemory(c.device, s.buffer, s.memory, 0);
   s.size = sz;
