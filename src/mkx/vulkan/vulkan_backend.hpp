@@ -36,18 +36,16 @@ struct VulkanBackend {
     uint32_t binding_count           = 0;
   };
 
-  // 外部(描画パイプライン等)が同じVkDevice上でmkxのBufferを直接参照するための生ハンドル。
-  struct DeviceHandles {
-    VkInstance instance        = VK_NULL_HANDLE;
-    VkPhysicalDevice physical  = VK_NULL_HANDLE;
-    VkDevice device            = VK_NULL_HANDLE;
-    VkQueue queue              = VK_NULL_HANDLE;
-    uint32_t queue_family      = 0;
-    VkCommandPool command_pool = VK_NULL_HANDLE;
-    bool multi_draw_indirect   = false; // multiDrawIndirect + drawIndirectFirstInstanceが有効
-    bool shader_clip_distance  = false;
+  // 外部が作ったVkInstance/VkDevice/VkQueueをmkxに使わせる。最初のmkx利用(バッファ確保等)より前に呼ぶこと。
+  // 呼ばなければ従来どおりmkxが自前でデバイスを作る。mkxは注入されたハンドルを破棄しない。mkx初期化済みならfalseを返す。
+  struct ExternalDevice {
+    VkInstance instance       = VK_NULL_HANDLE;
+    VkPhysicalDevice physical = VK_NULL_HANDLE;
+    VkDevice device           = VK_NULL_HANDLE;
+    VkQueue queue             = VK_NULL_HANDLE;
+    uint32_t queue_family     = 0;
   };
-  static DeviceHandles device_handles();
+  static bool use_external_device(const ExternalDevice& dev);
 
   static Pipeline compile(std::string_view source, size_t hash);
   static Buffer* alloc(size_t nbytes);
